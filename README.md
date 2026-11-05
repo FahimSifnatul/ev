@@ -31,12 +31,22 @@ shell installer builds from source (needs [Rust](https://rustup.rs)).
 ```sh
 ev set EDITOR vim          # set (alias: add)
 ev get EDITOR              # print one value
-ev list                    # print everything ev manages, as NAME=value
+ev list                    # print everything ev manages
+ev set API_URL x -d "staging API"  # attach a description (--desc)
 ev unset EDITOR            # remove (aliases: delete, rm)
 ev set LD_PRELOAD x --yes  # skip the confirmation for critical variables (-y)
 ```
 
 Changes apply to **new terminals**. Terminals that are already open keep their old environment.
+
+## Descriptions
+
+In a terminal, `ev list` prints a table with a `DESCRIPTION` column and `ev get` appends `# description` after the value. Values longer than 40 characters are shortened in the table.
+When output is piped or redirected, nothing changes: `ev list` prints `NAME=value` lines and `ev get` prints just the value, so scripts keep working.
+
+Well-known variables (`HOME`, `PATH`, `JAVA_HOME`, ...) have built-in descriptions; a description you set with `-d` takes precedence.
+`ev set` without `-d` keeps the existing description, and `ev unset` removes it.
+Your descriptions are stored in a `descriptions` file in the config dir (`~/.config/ev/` on macOS/Linux, `%APPDATA%\ev` on Windows).
 
 ## Critical variables
 

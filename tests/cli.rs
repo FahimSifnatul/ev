@@ -192,3 +192,46 @@ fn set_succeeds_when_rc_cannot_be_located() {
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     assert_eq!(env.read("vars"), "FOO=bar\n");
 }
+
+#[test]
+fn set_desc_writes_descriptions_file() {
+    let env = Env::new();
+    env.ok(&["set", "FOO", "bar", "-d", "my foo"]);
+    env.ok(&["set", "BAZ", "1", "--desc", "my baz"]);
+    assert_eq!(env.read("descriptions"), "BAZ=my baz\nFOO=my foo\n");
+}
+
+#[test]
+fn set_without_desc_keeps_existing_description() {
+    let env = Env::new();
+    env.ok(&["set", "FOO", "one", "-d", "keep me"]);
+    env.ok(&["set", "FOO", "two"]);
+    assert_eq!(env.read("descriptions"), "FOO=keep me\n");
+}
+
+#[test]
+fn unset_removes_description() {
+    let env = Env::new();
+    env.ok(&["set", "FOO", "bar", "-d", "gone soon"]);
+    env.ok(&["set", "KEEP", "1", "-d", "stay"]);
+    env.ok(&["unset", "FOO"]);
+    assert_eq!(env.read("descriptions"), "KEEP=stay\n");
+}
+
+#[test]
+fn desc_with_newline_is_rejected_and_nothing_changes() {
+    let env = Env::new();
+    let out = env.run(&["set", "FOO", "bar", "-d", "two\nlines"]);
+    assert!(!out.status.success());
+    assert_eq!(env.read("vars"), "");
+    assert_eq!(env.read("descriptions"), "");
+}
+
+#[test]
+fn piped_output_ignores_descriptions() {
+    let env = Env::new();
+    env.ok(&["set", "FOO", "bar", "-d", "described"]);
+    env.ok(&["set", "HOME", "/h", "--yes"]);
+    assert_eq!(env.ok(&["get", "FOO"]), "bar\n");
+    assert_eq!(env.ok(&["list"]), "FOO=bar\nHOME=/h\n");
+}

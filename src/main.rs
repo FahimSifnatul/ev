@@ -1,10 +1,10 @@
-#[allow(dead_code)]
-mod describe;
-#[allow(dead_code)]
-mod notes;
 mod danger;
+mod describe;
+mod notes;
+mod output;
 mod store;
 
+use std::collections::BTreeMap;
 use std::io::{self, IsTerminal, Write};
 
 use anyhow::{bail, Result};
@@ -25,7 +25,13 @@ struct Cli {
 enum Command {
     /// Set a variable permanently
     #[command(alias = "add")]
-    Set { key: String, value: String },
+    Set {
+        key: String,
+        value: String,
+        /// Describe the variable (shown by list and get in a terminal)
+        #[arg(short, long)]
+        desc: Option<String>,
+    },
     /// Remove a variable
     #[command(aliases = ["delete", "rm"])]
     Unset { key: String },
@@ -46,31 +52,70 @@ fn main() {
 
 fn run(cli: Cli) -> Result<()> {
     match cli.command {
-        Command::Set { key, value } => {
+        Command::Set { key, value, desc } => {
             store::validate_key(&key)?;
             store::validate_value(&value)?;
+            if let Some(text) = &desc {
+                notes::validate_text(text)?;
+            }
             guard(&key, cli.yes)?;
             store::set(&key, &value)?;
+            if let Some(text) = &desc {
+                notes::save(&key, text)?;
+            }
             done();
         }
         Command::Unset { key } => {
             store::validate_key(&key)?;
             guard(&key, cli.yes)?;
             store::unset(&key)?;
+            notes::remove(&key)?;
             done();
         }
         Command::Get { key } => match store::get(&key)? {
-            Some(value) => println!("{value}"),
+            Some(value) => print_value(&key, &value),
             None => std::process::exit(1),
         },
-        Command::List => {
-            for (key, value) in store::list()? {
-                println!("{key}={value}");
-            }
-        }
+        Command::List => print_list(store::list()?),
         Command::Init => store::init()?,
     }
     Ok(())
+}
+
+fn print_value(key: &str, value: &str) {
+    if !io::stdout().is_terminal() {
+        println!("{value}");
+        return;
+    }
+    match describe::description(key, &load_notes()) {
+        Some(desc) => println!("{value}    # {desc}"),
+        None => println!("{value}"),
+    }
+}
+
+fn print_list(vars: BTreeMap<String, String>) {
+    if !io::stdout().is_terminal() {
+        for (key, value) in vars {
+            println!("{key}={value}");
+        }
+        return;
+    }
+    let notes = load_notes();
+    let rows: Vec<_> = vars
+        .into_iter()
+        .map(|(key, value)| {
+            let desc = describe::description(&key, &notes).unwrap_or_default();
+            (key, value, desc)
+        })
+        .collect();
+    print!("{}", output::table(&rows));
+}
+
+fn load_notes() -> BTreeMap<String, String> {
+    notes::load().unwrap_or_else(|err| {
+        eprintln!("ev: warning: {err:#}; descriptions not shown");
+        BTreeMap::new()
+    })
 }
 
 fn done() {
