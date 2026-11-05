@@ -151,3 +151,28 @@ fn set_hints_until_init() {
     let out = env.run(&["set", "FOO", "2"]);
     assert!(!String::from_utf8_lossy(&out.stderr).contains(hint));
 }
+
+#[test]
+fn init_keeps_non_utf8_rc_bytes() {
+    let env = Env::new();
+    let original = b"export X=\xff\xfe\n";
+    std::fs::write(env.rc(), original).unwrap();
+    env.ok(&["init"]);
+    let rc = std::fs::read(env.rc()).unwrap();
+    assert!(rc.starts_with(original));
+    assert!(String::from_utf8_lossy(&rc).contains("# added by ev"));
+}
+
+#[test]
+fn state_files_are_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = Env::new();
+    env.ok(&["set", "SECRET", "x"]);
+    for name in ["vars", "env.sh", "env.fish"] {
+        let mode = std::fs::metadata(env.ev_home().join(name))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600, "{name}");
+    }
+}

@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::io::Write;
+use std::os::unix::fs::OpenOptionsExt;
 use std::{env, fs};
 
 use anyhow::{Context, Result};
@@ -134,8 +136,18 @@ fn hook_line(dir: &Path, fish: bool) -> String {
 }
 
 fn write_atomic(path: &Path, content: &str) -> Result<()> {
-    let tmp = path.with_extension("tmp");
-    fs::write(&tmp, content).with_context(|| format!("writing {}", tmp.display()))?;
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = PathBuf::from(tmp);
+    // values may be secrets: owner-only
+    fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&tmp)
+        .and_then(|mut f| f.write_all(content.as_bytes()))
+        .with_context(|| format!("writing {}", tmp.display()))?;
     fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))
 }
 
@@ -157,17 +169,22 @@ fn write_all(dir: &Path, entries: &[Entry]) -> Result<()> {
 fn change(new: Entry) -> Result<()> {
     let dir = config_dir()?;
     write_all(&dir, &replace(read_entries(&dir)?, new))?;
-    if !hook_installed(&dir) {
+    if !hook_installed(&dir)? {
         eprintln!("Run 'ev init' once so new shells load these variables.");
     }
     Ok(())
 }
 
-fn hook_installed(dir: &Path) -> bool {
-    let Ok((rc, fish)) = rc_file() else {
-        return false;
-    };
-    fs::read_to_string(rc).is_ok_and(|text| text.lines().any(|l| l == hook_line(dir, fish)))
+fn hook_installed(dir: &Path) -> Result<bool> {
+    let (rc, fish) = rc_file()?;
+    match fs::read(&rc) {
+        // lossy: the rc may hold non-UTF-8 bytes we must not choke on
+        Ok(bytes) => Ok(String::from_utf8_lossy(&bytes)
+            .lines()
+            .any(|l| l == hook_line(dir, fish))),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(err) => Err(err).with_context(|| format!("reading {}", rc.display())),
+    }
 }
 
 pub fn list() -> Result<BTreeMap<String, String>> {
@@ -194,16 +211,20 @@ pub fn init() -> Result<()> {
     write_all(&dir, &entries)?;
 
     let (rc, fish) = rc_file()?;
-    if hook_installed(&dir) {
+    if hook_installed(&dir)? {
         println!("{} already loads ev", rc.display());
         return Ok(());
     }
     if let Some(parent) = rc.parent() {
         fs::create_dir_all(parent)?;
     }
-    let mut text = fs::read_to_string(&rc).unwrap_or_default();
-    text.push_str(&format!("\n{}\n", hook_line(&dir, fish)));
-    fs::write(&rc, text).with_context(|| format!("writing {}", rc.display()))?;
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&rc)
+        .with_context(|| format!("opening {}", rc.display()))?;
+    write!(file, "\n{}\n", hook_line(&dir, fish))
+        .with_context(|| format!("writing {}", rc.display()))?;
     println!(
         "Added ev to {}. Open a new terminal to load it.",
         rc.display()
