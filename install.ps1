@@ -33,6 +33,12 @@ function Get-UserPath {
     (Get-Item 'HKCU:\Environment').GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
 }
 
+# The non-empty PATH entries, without trailing backslashes. Callers wrap the call in @() so that
+# zero or one entry still behaves as an array.
+function Get-UserPathParts {
+    (Get-UserPath) -split ';' | Where-Object { $_ } | ForEach-Object { $_.TrimEnd('\') }
+}
+
 function Set-UserPath($value) {
     Set-ItemProperty -Path 'HKCU:\Environment' -Name 'Path' -Value $value -Type ExpandString
     # setting and clearing a user variable makes Windows broadcast the environment change
@@ -41,7 +47,7 @@ function Set-UserPath($value) {
 }
 
 function Remove-FromUserPath {
-    $parts = @((Get-UserPath) -split ';' | Where-Object { $_ -and $_.TrimEnd('\') -ne $dir.TrimEnd('\') })
+    $parts = @(Get-UserPathParts | Where-Object { $_ -ne $dir.TrimEnd('\') })
     Set-UserPath ($parts -join ';')
 }
 
@@ -92,17 +98,15 @@ finally {
 }
 
 # ---------------------------------------------------------------- put it on the PATH
-$onPath = @((Get-UserPath) -split ';' | ForEach-Object { $_.TrimEnd('\') }) -contains $dir.TrimEnd('\')
-if ($onPath) {
+$parts = @(Get-UserPathParts)
+if ($parts -contains $dir.TrimEnd('\')) {
     # already there
 }
 elseif ($env:EV_NO_MODIFY_PATH -eq '1') {
     Write-Host "$dir is not on your PATH. Add it yourself to your user PATH."
 }
 else {
-    $current = Get-UserPath
-    if ($current) { $new = "$current;$dir" } else { $new = $dir }
-    Set-UserPath $new
+    Set-UserPath (($parts + $dir) -join ';')
     Write-Host "Added $dir to your user PATH."
 }
 
