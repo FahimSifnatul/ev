@@ -176,3 +176,19 @@ fn state_files_are_owner_only() {
         assert_eq!(mode & 0o777, 0o600, "{name}");
     }
 }
+
+#[test]
+fn set_succeeds_when_rc_cannot_be_located() {
+    let env = Env::new();
+    let out = Command::new(env!("CARGO_BIN_EXE_ev"))
+        .args(["set", "FOO", "bar"])
+        .env("EV_HOME", env.ev_home())
+        .env_remove("HOME")
+        .env_remove("ZDOTDIR")
+        .env("SHELL", "/bin/zsh")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(env.read("vars"), "FOO=bar\n");
+}

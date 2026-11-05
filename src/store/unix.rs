@@ -169,7 +169,8 @@ fn write_all(dir: &Path, entries: &[Entry]) -> Result<()> {
 fn change(new: Entry) -> Result<()> {
     let dir = config_dir()?;
     write_all(&dir, &replace(read_entries(&dir)?, new))?;
-    if !hook_installed(&dir)? {
+    // the hint is advisory: a failed check must not fail a saved change
+    if matches!(hook_installed(&dir), Ok(false)) {
         eprintln!("Run 'ev init' once so new shells load these variables.");
     }
     Ok(())
