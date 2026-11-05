@@ -219,6 +219,18 @@ fn unset_removes_description() {
 }
 
 #[test]
+fn blank_desc_clears_description() {
+    let env = Env::new();
+    env.ok(&["set", "FOO", "bar", "-d", "x"]);
+    env.ok(&["set", "KEEP", "1", "-d", "stay"]);
+    env.ok(&["set", "FOO", "bar", "-d", "  "]);
+    assert_eq!(env.read("descriptions"), "KEEP=stay\n");
+    assert_eq!(env.ok(&["get", "FOO"]), "bar\n");
+    env.ok(&["set", "KEEP", "1", "-d", ""]);
+    assert_eq!(env.read("descriptions"), "");
+}
+
+#[test]
 fn desc_with_newline_is_rejected_and_nothing_changes() {
     let env = Env::new();
     let out = env.run(&["set", "FOO", "bar", "-d", "two\nlines"]);

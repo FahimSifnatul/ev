@@ -25,7 +25,7 @@ pub fn table(rows: &[(String, String, String)]) -> String {
         let value = pad(row[1], widths[1]);
         format!("{name}  {value}  {}", row[2]).trim_end().to_string()
     };
-    let mut out = format!("\x1b[1m{}\x1b[0m\n", line(HEADER));
+    let mut out = format!("{}\n", line(HEADER));
     for row in &cells {
         out.push_str(&line([&row[0], &row[1], &row[2]]));
         out.push('\n');
@@ -54,9 +54,9 @@ mod tests {
     }
 
     #[test]
-    fn header_is_bold() {
+    fn has_header_row() {
         let out = table(&[row("A", "1", "one")]);
-        assert!(out.starts_with("\x1b[1mNAME  VALUE  DESCRIPTION\x1b[0m\n"));
+        assert!(out.starts_with("NAME  VALUE  DESCRIPTION\n"));
     }
 
     #[test]
@@ -83,6 +83,15 @@ mod tests {
         let out = table(&[row("A", &"x".repeat(41), "d")]);
         let cut = format!("{}…", "x".repeat(39));
         assert!(out.contains(&format!("A     {cut}  d")));
+    }
+
+    #[test]
+    fn multibyte_value_is_cut_on_chars_and_stays_aligned() {
+        let out = table(&[row("A", &"é".repeat(41), "d"), row("B", "1", "e")]);
+        let cut = format!("{}…", "é".repeat(39));
+        let lines: Vec<&str> = out.lines().skip(1).collect();
+        assert_eq!(lines[0], format!("A     {cut}  d"));
+        assert_eq!(lines[1], format!("B     {:<40}  e", "1"));
     }
 
     #[test]

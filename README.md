@@ -29,12 +29,12 @@ shell installer builds from source (needs [Rust](https://rustup.rs)).
 ## Usage
 
 ```sh
-ev set EDITOR vim          # set (alias: add)
-ev get EDITOR              # print one value
-ev list                    # print everything ev manages
+ev set EDITOR vim                  # set (alias: add)
+ev get EDITOR                      # print one value
+ev list                            # print everything ev manages
 ev set API_URL x -d "staging API"  # attach a description (--desc)
-ev unset EDITOR            # remove (aliases: delete, rm)
-ev set LD_PRELOAD x --yes  # skip the confirmation for critical variables (-y)
+ev unset EDITOR                    # remove (aliases: delete, rm)
+ev set LD_PRELOAD x --yes          # skip the confirmation for critical variables (-y)
 ```
 
 Changes apply to **new terminals**. Terminals that are already open keep their old environment.
@@ -46,7 +46,8 @@ When output is piped or redirected, nothing changes: `ev list` prints `NAME=valu
 
 Well-known variables (`HOME`, `PATH`, `JAVA_HOME`, ...) have built-in descriptions; a description you set with `-d` takes precedence.
 `ev set` without `-d` keeps the existing description, and `ev unset` removes it.
-Your descriptions are stored in a `descriptions` file in the config dir (`~/.config/ev/` on macOS/Linux, `%APPDATA%\ev` on Windows).
+`ev set KEY value -d ""` clears your description for `KEY`.
+Your descriptions are stored in a `descriptions` file: `~/.config/ev/` on macOS/Linux (or `$XDG_CONFIG_HOME/ev`, or `$EV_HOME`), `%APPDATA%\ev` on Windows (or `%EV_HOME%` if set).
 
 ## Critical variables
 
@@ -60,9 +61,9 @@ Pass `--yes` to skip the prompt (required when stdin is not a terminal, such as 
 
 ## Where the data lives
 
-- **Windows:** `HKCU\Environment` (the same place as the system's "Environment Variables" dialog).
+- **Windows:** the variables live in `HKCU\Environment` (the same place as the system's "Environment Variables" dialog), but your descriptions live in the `descriptions` file in `%APPDATA%\ev` (or `%EV_HOME%`), not in the registry.
 - **macOS / Linux:** `~/.config/ev/` (or `$XDG_CONFIG_HOME/ev`, or `$EV_HOME`) holds the variables and generated
-  `env.sh` / `env.fish` files. `ev init` adds one line to your shell startup file (`.zshrc`, `.bashrc`,
+  `env.sh` / `env.fish` files and the `descriptions` file. `ev init` adds one line to your shell startup file (`.zshrc`, `.bashrc`,
   `.bash_profile`/`.profile`, or fish's `conf.d/ev.fish`) that loads them.
 
 ## Update and uninstall

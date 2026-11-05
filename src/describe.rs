@@ -48,6 +48,7 @@ pub fn builtin(key: &str) -> Option<&'static str> {
 /// The user's note for `key` if there is one, else the built-in description.
 pub fn description(key: &str, notes: &BTreeMap<String, String>) -> Option<String> {
     note(key, notes)
+        .filter(|text| !text.trim().is_empty())
         .cloned()
         .or_else(|| builtin(key).map(str::to_string))
 }
@@ -106,6 +107,15 @@ mod tests {
             description("HOME", &notes("HOME", "mine")),
             Some("mine".to_string())
         );
+    }
+
+    #[test]
+    fn blank_note_is_ignored() {
+        assert_eq!(
+            description("HOME", &notes("HOME", "  ")),
+            Some("user's home directory".to_string())
+        );
+        assert_eq!(description("MY_VAR", &notes("MY_VAR", "")), None);
     }
 
     #[test]

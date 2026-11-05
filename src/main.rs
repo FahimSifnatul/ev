@@ -7,7 +7,7 @@ mod store;
 use std::collections::BTreeMap;
 use std::io::{self, IsTerminal, Write};
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -61,7 +61,13 @@ fn run(cli: Cli) -> Result<()> {
             guard(&key, cli.yes)?;
             store::set(&key, &value)?;
             if let Some(text) = &desc {
-                notes::save(&key, text)?;
+                // a blank description clears ours
+                let saved = if text.trim().is_empty() {
+                    notes::remove(&key)
+                } else {
+                    notes::save(&key, text)
+                };
+                saved.context("variable saved, but saving its description failed")?;
             }
             done();
         }
@@ -69,7 +75,9 @@ fn run(cli: Cli) -> Result<()> {
             store::validate_key(&key)?;
             guard(&key, cli.yes)?;
             store::unset(&key)?;
-            notes::remove(&key)?;
+            if let Err(err) = notes::remove(&key) {
+                eprintln!("ev: warning: {err:#}");
+            }
             done();
         }
         Command::Get { key } => match store::get(&key)? {
