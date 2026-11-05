@@ -10,6 +10,7 @@ mod windows;
 #[cfg(windows)]
 pub use windows::*;
 
+#[cfg(unix)]
 pub fn get(key: &str) -> Result<Option<String>> {
     Ok(list()?.get(key).cloned())
 }

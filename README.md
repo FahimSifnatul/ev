@@ -23,7 +23,7 @@ irm https://github.com/FahimSifnatul/ev/releases/latest/download/install.ps1 | i
 ```
 
 The installers put one program on your PATH, verify its checksum, and need no administrator rights.
-On macOS/Linux the installer also runs `ev init` (see below). If there is no ready-made file for your machine, the
+On macOS/Linux the installer also runs `ev init` (see below); set `EV_NO_MODIFY_PATH=1` (or pass `--no-modify-path`) to skip it and any other shell startup file edit, then run `ev init` yourself. If there is no ready-made file for your machine, the
 shell installer builds from source (needs [Rust](https://rustup.rs)).
 
 ## Usage

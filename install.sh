@@ -14,7 +14,7 @@
 # Optional environment variables:
 #   EV_INSTALL_DIR      where to put the file             (default: ~/.local/bin)
 #   EV_VERSION          release tag such as v0.1.0        (default: the latest release)
-#   EV_NO_MODIFY_PATH=1 do not edit any shell startup file
+#   EV_NO_MODIFY_PATH=1 do not edit any shell startup file (no PATH line, no `ev init` hook)
 #   EV_REPO, EV_BASE_URL, EV_REF   for forks, mirrors and testing
 
 set -eu
@@ -42,7 +42,7 @@ ev installer: puts one self-contained program called `ev` on your PATH.
 
   install.sh                    install (or update)
   install.sh --uninstall        remove it again
-  install.sh --no-modify-path   do not edit shell startup files
+  install.sh --no-modify-path   do not edit shell startup files (skips the PATH line and `ev init`)
 
 Environment: EV_INSTALL_DIR (default ~/.local/bin), EV_VERSION (e.g. v0.1.0),
 EV_NO_MODIFY_PATH=1. Needs curl or wget; building from source needs Rust's cargo.
@@ -160,7 +160,11 @@ say "Installed $INSTALLED at $DIR/$NAME"
 
 # ---------------------------------------------------------------- load variables in new terminals
 # `ev init` adds a line to your shell startup file that loads the variables you set with ev
-"$DIR/$NAME" init || warn "could not set up the shell hook; run '$NAME init' yourself later."
+if [ "${EV_NO_MODIFY_PATH:-0}" = 1 ]; then
+  say "Shell startup files left alone. Run '$NAME init' yourself to load variables set with ev."
+else
+  "$DIR/$NAME" init || warn "could not set up the shell hook; run '$NAME init' yourself later."
+fi
 
 # ---------------------------------------------------------------- put it on the PATH
 on_path() { case ":$PATH:" in *":$DIR:"*) return 0 ;; esac; return 1; }
@@ -211,7 +215,9 @@ else
   say "Ready. Try:   ev --help"
 fi
 say ""
-say "Variables you set with ev (ev set NAME value) are loaded by every new terminal."
+if [ "${EV_NO_MODIFY_PATH:-0}" != 1 ]; then
+  say "Variables you set with ev (ev set NAME value) are loaded by every new terminal."
+fi
 if [ "$FROM_CLONE" = 1 ]; then
   say ""
   say "ev is one self-contained program, so you can delete the folder you installed from."
