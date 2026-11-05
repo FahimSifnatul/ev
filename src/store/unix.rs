@@ -88,7 +88,7 @@ fn xdg_config() -> Result<PathBuf> {
     }
 }
 
-fn config_dir() -> Result<PathBuf> {
+pub(crate) fn config_dir() -> Result<PathBuf> {
     match env::var_os("EV_HOME") {
         Some(dir) => Ok(PathBuf::from(dir)),
         None => Ok(xdg_config()?.join("ev")),
@@ -135,7 +135,7 @@ fn hook_line(dir: &Path, fish: bool) -> String {
     }
 }
 
-fn write_atomic(path: &Path, content: &str) -> Result<()> {
+pub(crate) fn write_atomic(path: &Path, content: &str) -> Result<()> {
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(".tmp");
     let tmp = PathBuf::from(tmp);

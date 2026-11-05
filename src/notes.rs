@@ -1,0 +1,169 @@
+use std::collections::BTreeMap;
+use std::fs;
+use std::path::Path;
+
+use anyhow::{bail, Context, Result};
+
+#[cfg(unix)]
+use crate::store::{config_dir, write_atomic};
+
+const FILE: &str = "descriptions";
+
+#[cfg(windows)]
+fn config_dir() -> Result<std::path::PathBuf> {
+    use std::path::PathBuf;
+
+    if let Some(dir) = std::env::var_os("EV_HOME") {
+        return Ok(PathBuf::from(dir));
+    }
+    let appdata = std::env::var_os("APPDATA").context("APPDATA is not set")?;
+    Ok(PathBuf::from(appdata).join("ev"))
+}
+
+#[cfg(windows)]
+fn write_atomic(path: &Path, content: &str) -> Result<()> {
+    let tmp = path.with_extension("tmp");
+    fs::write(&tmp, content).with_context(|| format!("writing {}", tmp.display()))?;
+    fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))
+}
+
+pub fn validate_text(text: &str) -> Result<()> {
+    if text.contains(['\n', '\r', '\0']) {
+        bail!("invalid description: newlines and NUL characters are not allowed");
+    }
+    Ok(())
+}
+
+fn parse(text: &str) -> BTreeMap<String, String> {
+    text.lines()
+        .filter_map(|line| line.split_once('='))
+        .map(|(key, text)| (key.to_string(), text.to_string()))
+        .collect()
+}
+
+fn render(notes: &BTreeMap<String, String>) -> String {
+    notes
+        .iter()
+        .map(|(key, text)| format!("{key}={text}\n"))
+        .collect()
+}
+
+fn load_from(dir: &Path) -> Result<BTreeMap<String, String>> {
+    match fs::read_to_string(dir.join(FILE)) {
+        Ok(text) => Ok(parse(&text)),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(BTreeMap::new()),
+        Err(err) => Err(err).context("reading descriptions"),
+    }
+}
+
+fn write_to(dir: &Path, notes: &BTreeMap<String, String>) -> Result<()> {
+    fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    write_atomic(&dir.join(FILE), &render(notes))
+}
+
+fn save_in(dir: &Path, key: &str, text: &str) -> Result<()> {
+    let mut notes = load_from(dir)?;
+    notes.insert(key.to_string(), text.to_string());
+    write_to(dir, &notes)
+}
+
+fn remove_in(dir: &Path, key: &str) -> Result<()> {
+    let mut notes = load_from(dir)?;
+    if notes.remove(key).is_some() {
+        write_to(dir, &notes)?;
+    }
+    Ok(())
+}
+
+pub fn load() -> Result<BTreeMap<String, String>> {
+    load_from(&config_dir()?)
+}
+
+pub fn save(key: &str, text: &str) -> Result<()> {
+    save_in(&config_dir()?, key, text)
+}
+
+pub fn remove(key: &str) -> Result<()> {
+    remove_in(&config_dir()?, key)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn notes(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn render_then_parse_round_trips() {
+        let n = notes(&[("A", "first"), ("B", "second one")]);
+        assert_eq!(render(&n), "A=first\nB=second one\n");
+        assert_eq!(parse(&render(&n)), n);
+    }
+
+    #[test]
+    fn parse_skips_malformed_lines() {
+        assert_eq!(
+            parse("A=1\nno separator\n\nB=2\n"),
+            notes(&[("A", "1"), ("B", "2")])
+        );
+    }
+
+    #[test]
+    fn text_may_contain_equals() {
+        assert_eq!(parse("A=x=y\n"), notes(&[("A", "x=y")]));
+    }
+
+    #[test]
+    fn rejects_line_breaks_and_nul() {
+        assert!(validate_text("one line = fine").is_ok());
+        for bad in ["a\nb", "a\rb", "a\0b"] {
+            assert!(validate_text(bad).is_err());
+        }
+    }
+
+    #[test]
+    fn missing_file_loads_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(load_from(dir.path()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn save_adds_and_replaces() {
+        let dir = tempfile::tempdir().unwrap();
+        save_in(dir.path(), "A", "one").unwrap();
+        save_in(dir.path(), "B", "two").unwrap();
+        save_in(dir.path(), "A", "uno").unwrap();
+        assert_eq!(
+            load_from(dir.path()).unwrap(),
+            notes(&[("A", "uno"), ("B", "two")])
+        );
+    }
+
+    #[test]
+    fn save_creates_missing_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("new");
+        save_in(&nested, "A", "one").unwrap();
+        assert_eq!(load_from(&nested).unwrap(), notes(&[("A", "one")]));
+    }
+
+    #[test]
+    fn remove_deletes_key() {
+        let dir = tempfile::tempdir().unwrap();
+        save_in(dir.path(), "A", "one").unwrap();
+        remove_in(dir.path(), "A").unwrap();
+        assert!(load_from(dir.path()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn remove_absent_key_does_not_write() {
+        let dir = tempfile::tempdir().unwrap();
+        remove_in(dir.path(), "A").unwrap();
+        assert!(!dir.path().join(FILE).exists());
+    }
+}

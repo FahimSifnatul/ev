@@ -1,3 +1,7 @@
+#[allow(dead_code)]
+mod describe;
+#[allow(dead_code)]
+mod notes;
 mod danger;
 mod store;
 
