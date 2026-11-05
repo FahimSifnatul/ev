@@ -1,0 +1,50 @@
+name: tests
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  test:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install stable --profile minimal --component clippy && rustup default stable
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --locked
+
+  installer:
+    name: installer script
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lint the shell script
+        run: shellcheck -s sh install.sh
+      - run: rustup toolchain install stable --profile minimal && rustup default stable
+      - name: Install from this checkout, as a user would
+        run: |
+          sh install.sh
+          ev="$HOME/.local/bin/ev"
+          export EV_HOME="$RUNNER_TEMP/ev-home"
+          "$ev" --version
+          "$ev" set EV_CI_TEST 1
+          test "$("$ev" get EV_CI_TEST)" = 1
+          "$ev" unset EV_CI_TEST
+
+  installer-windows:
+    name: installer script (windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check that install.ps1 parses
+        shell: pwsh
+        run: |
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile("$PWD/install.ps1", [ref]$null, [ref]$errors) | Out-Null
+          if ($errors) { $errors | ForEach-Object { Write-Error $_.Message }; exit 1 }

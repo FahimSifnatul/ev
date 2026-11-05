@@ -1,0 +1,96 @@
+name: release
+
+# Publishes a GitHub Release with one ready-made `ev` program per platform attached
+# (ev-macos-aarch64, ev-linux-x86_64 ...). install.sh / install.ps1 download the one that fits the machine.
+# Two ways to trigger it:
+#   - bump `version` in Cargo.toml and push to master: this tags vX.Y.Z on that commit and releases it
+#     (a push whose version is already tagged does nothing)
+#   - or push a tag such as v0.1.0 yourself; it must match the version in Cargo.toml
+on:
+  push:
+    branches: [master]
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+concurrency:                          # never two releases at once; a queued run waits instead of being cancelled
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Decide the tag
+        id: tag
+        run: |
+          tag="v$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            if [ "$tag" != "$GITHUB_REF_NAME" ]; then
+              echo "Tag $GITHUB_REF_NAME does not match the version in Cargo.toml (${tag#v}). Fix one of them and re-tag." >&2
+              exit 1
+            fi
+          elif git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+            echo "$tag already exists, nothing to release. Bump the version in Cargo.toml to publish a new one."
+            exit 0
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: tag
+    if: needs.tag.outputs.tag
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { os: macos-latest, target: aarch64-apple-darwin, asset: ev-macos-aarch64 }
+          - { os: macos-latest, target: x86_64-apple-darwin, asset: ev-macos-x86_64 }
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-musl, asset: ev-linux-x86_64 }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl, asset: ev-linux-aarch64 }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc, asset: ev-windows-x86_64.exe }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust for ${{ matrix.target }}
+        shell: bash
+        run: rustup toolchain install stable --profile minimal --target ${{ matrix.target }} && rustup default stable
+      - name: musl tools
+        if: contains(matrix.target, 'musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - run: cargo test --release --locked --target ${{ matrix.target }}
+        if: "!contains(matrix.target, 'x86_64-apple')"   # built on an arm runner: cannot run it
+      - name: Build
+        shell: bash
+        run: |
+          cargo build --release --locked --target ${{ matrix.target }}
+          exe=target/${{ matrix.target }}/release/ev
+          [ -f "$exe.exe" ] && exe="$exe.exe"
+          mkdir -p out && cp "$exe" "out/${{ matrix.asset }}"
+          cd out
+          # Git Bash on Windows has sha256sum but no shasum; macOS has shasum
+          if command -v sha256sum >/dev/null 2>&1; then sum=sha256sum; else sum="shasum -a 256"; fi
+          $sum "${{ matrix.asset }}" > "${{ matrix.asset }}.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: out/*
+
+  publish:
+    needs: [tag, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4          # install.sh and install.ps1 are attached to the release too
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.tag.outputs.tag }}
+        # --target creates the tag on this commit when it does not exist yet (a version bump pushed to master)
+        run: gh release create "$TAG" out/* install.sh install.ps1 --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "$TAG" --generate-notes
