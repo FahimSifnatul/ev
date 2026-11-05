@@ -14,15 +14,15 @@ const BUILTIN: &[(&str, &str)] = &[
     ("PAGER", "program used to page output"),
     ("XDG_CONFIG_HOME", "base directory for user config"),
     ("XDG_DATA_HOME", "base directory for user data"),
-    ("GOPATH", "Go workspace directory"),
-    ("GOROOT", "Go installation directory"),
-    ("JAVA_HOME", "Java installation directory"),
-    ("CARGO_HOME", "Cargo data and binaries directory"),
+    ("GOPATH", "go workspace directory"),
+    ("GOROOT", "go installation directory"),
+    ("JAVA_HOME", "java installation directory"),
+    ("CARGO_HOME", "cargo data and binaries directory"),
     ("RUSTUP_HOME", "rustup toolchains directory"),
-    ("PYTHONPATH", "extra Python module search paths"),
-    ("VIRTUAL_ENV", "active Python virtual environment"),
-    ("NODE_ENV", "Node.js runtime environment name"),
-    ("NODE_PATH", "extra Node.js module search paths"),
+    ("PYTHONPATH", "extra python module search paths"),
+    ("VIRTUAL_ENV", "active python virtual environment"),
+    ("NODE_ENV", "node.js runtime environment name"),
+    ("NODE_PATH", "extra node.js module search paths"),
     ("HTTP_PROXY", "proxy for HTTP requests"),
     ("HTTPS_PROXY", "proxy for HTTPS requests"),
     ("NO_PROXY", "hosts that bypass the proxy"),
@@ -33,7 +33,7 @@ const BUILTIN: &[(&str, &str)] = &[
     ("TMP", "directory for temporary files"),
     ("PATHEXT", "extensions treated as executable"),
     ("COMSPEC", "command interpreter path"),
-    ("SYSTEMROOT", "Windows system directory"),
+    ("SYSTEMROOT", "windows system directory"),
     ("PROGRAMFILES", "program installation directory"),
     ("EV_HOME", "where ev stores its files"),
 ];
@@ -72,6 +72,15 @@ mod tests {
 
     fn notes(key: &str, text: &str) -> BTreeMap<String, String> {
         BTreeMap::from([(key.to_string(), text.to_string())])
+    }
+
+    #[test]
+    fn builtin_texts_follow_style() {
+        for (name, text) in BUILTIN {
+            assert!(text.starts_with(|c: char| c.is_ascii_lowercase()), "{name}");
+            assert!(!text.ends_with('.'), "{name}");
+            assert!(text.split_whitespace().count() < 8, "{name}");
+        }
     }
 
     #[test]

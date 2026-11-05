@@ -61,15 +61,31 @@ fn write_to(dir: &Path, notes: &BTreeMap<String, String>) -> Result<()> {
     write_atomic(&dir.join(FILE), &render(notes))
 }
 
-fn save_in(dir: &Path, key: &str, text: &str) -> Result<()> {
+/// The stored spelling of `key`, matching case-insensitively when asked.
+fn stored_key(notes: &BTreeMap<String, String>, key: &str, ignore_case: bool) -> Option<String> {
+    notes
+        .keys()
+        .find(|name| {
+            if ignore_case {
+                name.eq_ignore_ascii_case(key)
+            } else {
+                *name == key
+            }
+        })
+        .cloned()
+}
+
+fn save_in(dir: &Path, key: &str, text: &str, ignore_case: bool) -> Result<()> {
     let mut notes = load_from(dir)?;
-    notes.insert(key.to_string(), text.to_string());
+    let key = stored_key(&notes, key, ignore_case).unwrap_or_else(|| key.to_string());
+    notes.insert(key, text.to_string());
     write_to(dir, &notes)
 }
 
-fn remove_in(dir: &Path, key: &str) -> Result<()> {
+fn remove_in(dir: &Path, key: &str, ignore_case: bool) -> Result<()> {
     let mut notes = load_from(dir)?;
-    if notes.remove(key).is_some() {
+    if let Some(key) = stored_key(&notes, key, ignore_case) {
+        notes.remove(&key);
         write_to(dir, &notes)?;
     }
     Ok(())
@@ -80,11 +96,11 @@ pub fn load() -> Result<BTreeMap<String, String>> {
 }
 
 pub fn save(key: &str, text: &str) -> Result<()> {
-    save_in(&config_dir()?, key, text)
+    save_in(&config_dir()?, key, text, cfg!(windows))
 }
 
 pub fn remove(key: &str) -> Result<()> {
-    remove_in(&config_dir()?, key)
+    remove_in(&config_dir()?, key, cfg!(windows))
 }
 
 #[cfg(test)]
@@ -135,9 +151,9 @@ mod tests {
     #[test]
     fn save_adds_and_replaces() {
         let dir = tempfile::tempdir().unwrap();
-        save_in(dir.path(), "A", "one").unwrap();
-        save_in(dir.path(), "B", "two").unwrap();
-        save_in(dir.path(), "A", "uno").unwrap();
+        save_in(dir.path(), "A", "one", false).unwrap();
+        save_in(dir.path(), "B", "two", false).unwrap();
+        save_in(dir.path(), "A", "uno", false).unwrap();
         assert_eq!(
             load_from(dir.path()).unwrap(),
             notes(&[("A", "uno"), ("B", "two")])
@@ -148,22 +164,50 @@ mod tests {
     fn save_creates_missing_dir() {
         let dir = tempfile::tempdir().unwrap();
         let nested = dir.path().join("new");
-        save_in(&nested, "A", "one").unwrap();
+        save_in(&nested, "A", "one", false).unwrap();
         assert_eq!(load_from(&nested).unwrap(), notes(&[("A", "one")]));
     }
 
     #[test]
     fn remove_deletes_key() {
         let dir = tempfile::tempdir().unwrap();
-        save_in(dir.path(), "A", "one").unwrap();
-        remove_in(dir.path(), "A").unwrap();
+        save_in(dir.path(), "A", "one", false).unwrap();
+        remove_in(dir.path(), "A", false).unwrap();
         assert!(load_from(dir.path()).unwrap().is_empty());
     }
 
     #[test]
     fn remove_absent_key_does_not_write() {
         let dir = tempfile::tempdir().unwrap();
-        remove_in(dir.path(), "A").unwrap();
+        remove_in(dir.path(), "A", false).unwrap();
         assert!(!dir.path().join(FILE).exists());
+    }
+
+    #[test]
+    fn ignore_case_save_replaces_existing_spelling() {
+        let dir = tempfile::tempdir().unwrap();
+        save_in(dir.path(), "PATH", "one", true).unwrap();
+        save_in(dir.path(), "path", "two", true).unwrap();
+        assert_eq!(load_from(dir.path()).unwrap(), notes(&[("PATH", "two")]));
+    }
+
+    #[test]
+    fn ignore_case_remove_finds_key() {
+        let dir = tempfile::tempdir().unwrap();
+        save_in(dir.path(), "PATH", "one", true).unwrap();
+        remove_in(dir.path(), "path", true).unwrap();
+        assert!(load_from(dir.path()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn exact_match_keeps_differently_cased_keys_apart() {
+        let dir = tempfile::tempdir().unwrap();
+        save_in(dir.path(), "PATH", "one", false).unwrap();
+        save_in(dir.path(), "path", "two", false).unwrap();
+        remove_in(dir.path(), "Path", false).unwrap();
+        assert_eq!(
+            load_from(dir.path()).unwrap(),
+            notes(&[("PATH", "one"), ("path", "two")])
+        );
     }
 }
