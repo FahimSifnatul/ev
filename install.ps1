@@ -33,11 +33,14 @@ function Get-UserPath {
     (Get-Item 'HKCU:\Environment').GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
 }
 
-# The non-empty PATH entries, without trailing backslashes. Callers wrap the call in @() so that
-# zero or one entry still behaves as an array.
+# The non-empty PATH entries, exactly as stored (never trimmed: `C:\` must stay `C:\`). Callers wrap
+# the call in @() so that zero or one entry still behaves as an array.
 function Get-UserPathParts {
-    (Get-UserPath) -split ';' | Where-Object { $_ } | ForEach-Object { $_.TrimEnd('\') }
+    (Get-UserPath) -split ';' | Where-Object { $_ }
 }
+
+# Compare two folders, ignoring case (PowerShell's default) and trailing backslashes. Comparison only.
+function Test-SameDir($a, $b) { $a.TrimEnd('\') -eq $b.TrimEnd('\') }
 
 function Set-UserPath($value) {
     Set-ItemProperty -Path 'HKCU:\Environment' -Name 'Path' -Value $value -Type ExpandString
@@ -47,8 +50,9 @@ function Set-UserPath($value) {
 }
 
 function Remove-FromUserPath {
-    $parts = @(Get-UserPathParts | Where-Object { $_ -ne $dir.TrimEnd('\') })
-    Set-UserPath ($parts -join ';')
+    $parts = @(Get-UserPathParts)
+    $kept  = @($parts | Where-Object { -not (Test-SameDir $_ $dir) })
+    if ($kept.Count -ne $parts.Count) { Set-UserPath ($kept -join ';') }
 }
 
 # ---------------------------------------------------------------- uninstall
@@ -99,7 +103,7 @@ finally {
 
 # ---------------------------------------------------------------- put it on the PATH
 $parts = @(Get-UserPathParts)
-if ($parts -contains $dir.TrimEnd('\')) {
+if (@($parts | Where-Object { Test-SameDir $_ $dir }).Count -gt 0) {
     # already there
 }
 elseif ($env:EV_NO_MODIFY_PATH -eq '1') {
