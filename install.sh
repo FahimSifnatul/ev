@@ -128,7 +128,9 @@ else
   ASSET="$NAME-$(platform)"
   say "Downloading ev ($ASSET)..."
   if fetch "$REL/$ASSET" "$TMP/$NAME" 2>/dev/null; then
-    if fetch "$REL/$ASSET.sha256" "$TMP/$NAME.sha256" 2>/dev/null; then verify_checksum; fi
+    fetch "$REL/$ASSET.sha256" "$TMP/$NAME.sha256" 2>/dev/null \
+      || die "could not download the checksum file ($ASSET.sha256), so the download cannot be verified. Nothing was installed."
+    verify_checksum
   else
     # no release published yet, or none made for this machine: build the current source instead
     say "No ready-made $ASSET found, building from source..."

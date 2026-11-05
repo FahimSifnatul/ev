@@ -27,11 +27,22 @@ $version = Env-Or 'EV_VERSION' 'latest'
 $dir     = Env-Or 'EV_INSTALL_DIR' (Join-Path $env:LOCALAPPDATA 'Programs\ev')
 $exe     = Join-Path $dir 'ev.exe'
 
-function Get-UserPath { [Environment]::GetEnvironmentVariable('Path', 'User') }
+# Read the raw user PATH (keeps %VARS% unexpanded) and write it back as REG_EXPAND_SZ,
+# so existing entries such as %USERPROFILE%\bin keep working.
+function Get-UserPath {
+    (Get-Item 'HKCU:\Environment').GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+}
+
+function Set-UserPath($value) {
+    Set-ItemProperty -Path 'HKCU:\Environment' -Name 'Path' -Value $value -Type ExpandString
+    # setting and clearing a user variable makes Windows broadcast the environment change
+    [Environment]::SetEnvironmentVariable('EV_REFRESH', '1', 'User')
+    [Environment]::SetEnvironmentVariable('EV_REFRESH', $null, 'User')
+}
 
 function Remove-FromUserPath {
     $parts = @((Get-UserPath) -split ';' | Where-Object { $_ -and $_.TrimEnd('\') -ne $dir.TrimEnd('\') })
-    [Environment]::SetEnvironmentVariable('Path', ($parts -join ';'), 'User')
+    Set-UserPath ($parts -join ';')
 }
 
 # ---------------------------------------------------------------- uninstall
@@ -91,7 +102,7 @@ elseif ($env:EV_NO_MODIFY_PATH -eq '1') {
 else {
     $current = Get-UserPath
     if ($current) { $new = "$current;$dir" } else { $new = $dir }
-    [Environment]::SetEnvironmentVariable('Path', $new, 'User')
+    Set-UserPath $new
     Write-Host "Added $dir to your user PATH."
 }
 
