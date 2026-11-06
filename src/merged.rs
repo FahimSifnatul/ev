@@ -85,9 +85,19 @@ fn merge(
     let mut merged = Merged::default();
     merged.overlay(process, PROCESS);
     merged.relabel(labels);
+    let ev = ev
+        .into_iter()
+        .filter(|(name, _)| !keeps_process_value(name, &merged, cfg!(windows)))
+        .collect::<Vec<_>>();
     merged.overlay(ev, EV_STORE);
     merged.hide(hidden);
     merged
+}
+
+/// On Windows the process PATH is the expanded user+system value, while the
+/// store only holds the user part (unexpanded), so the process value wins.
+fn keeps_process_value(name: &str, merged: &Merged, windows: bool) -> bool {
+    windows && name.eq_ignore_ascii_case("PATH") && merged.get("PATH").is_some()
 }
 
 /// Only what ev itself manages (`ev list --ev`).
@@ -197,6 +207,17 @@ mod tests {
         let merged = merge(pairs(&[("A", "1"), ("B", "2")]), &BTreeMap::new(), BTreeMap::new(), &hidden);
         assert!(merged.get("A").is_none());
         assert_eq!(merged.get("B").map(|r| r.value.as_str()), Some("2"));
+    }
+
+    #[test]
+    fn windows_keeps_process_path_over_user_store_path() {
+        let mut merged = Merged::default();
+        merged.overlay(pairs(&[("PATH", "/full:/expanded")]), PROCESS);
+        assert!(keeps_process_value("Path", &merged, true));
+        assert!(!keeps_process_value("Path", &merged, false));
+        assert!(!keeps_process_value("FOO", &merged, true));
+        // no process PATH: the store value is all there is
+        assert!(!keeps_process_value("Path", &Merged::default(), true));
     }
 
     #[test]
