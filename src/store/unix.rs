@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
@@ -194,6 +194,17 @@ pub fn list() -> Result<BTreeMap<String, String>> {
         .filter_map(|entry| match entry {
             Entry::Set(k, v) => Some((k, v)),
             Entry::Unset(_) => None,
+        })
+        .collect())
+}
+
+/// Names with a pending delete: they must not show up as variables.
+pub fn deleted() -> Result<BTreeSet<String>> {
+    Ok(read_entries(&config_dir()?)?
+        .into_iter()
+        .filter_map(|entry| match entry {
+            Entry::Unset(k) => Some(k),
+            Entry::Set(..) => None,
         })
         .collect())
 }

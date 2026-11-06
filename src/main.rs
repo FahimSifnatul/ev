@@ -1,5 +1,6 @@
 mod danger;
 mod describe;
+mod merged;
 mod notes;
 mod output;
 #[cfg(unix)]
@@ -42,7 +43,11 @@ enum Command {
     /// Print a variable's value
     Get { key: String },
     /// List all variables
-    List,
+    List {
+        /// Only the variables ev manages
+        #[arg(long)]
+        ev: bool,
+    },
     /// Prepare the shell to load ev's variables
     Init,
 }
@@ -94,11 +99,14 @@ fn run(cli: Cli) -> Result<()> {
             }
             done();
         }
-        Command::Get { key } => match store::get(&key)? {
-            Some(value) => print_value(&key, &value),
+        Command::Get { key } => match merged::collect()?.get(&key) {
+            Some(row) => print_value(&row.name, &row.value),
             None => std::process::exit(1),
         },
-        Command::List => print_list(store::list()?),
+        Command::List { ev } => {
+            let vars = if ev { merged::ev_only()? } else { merged::collect()? };
+            print_list(vars);
+        }
         Command::Init => store::init()?,
     }
     Ok(())
@@ -115,19 +123,20 @@ fn print_value(key: &str, value: &str) {
     }
 }
 
-fn print_list(vars: BTreeMap<String, String>) {
+fn print_list(vars: merged::Merged) {
+    let vars = vars.into_rows();
     if !io::stdout().is_terminal() {
-        for (key, value) in vars {
-            println!("{key}={value}");
+        for row in vars {
+            println!("{}={}", row.name, row.value);
         }
         return;
     }
     let notes = load_notes();
     let rows: Vec<_> = vars
         .into_iter()
-        .map(|(key, value)| {
-            let desc = describe::description(&key, &notes).unwrap_or_default();
-            (key, value, desc)
+        .map(|row| {
+            let desc = describe::description(&row.name, &notes).unwrap_or_default();
+            (row.name, row.value, row.source, desc)
         })
         .collect();
     print!("{}", output::table(&rows));

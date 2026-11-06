@@ -1,5 +1,5 @@
 use anyhow::{bail, Context, Result};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::ErrorKind;
 use std::ptr;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -18,18 +18,6 @@ fn open(access: u32) -> Result<RegKey> {
 }
 
 const MACHINE_ENV: &str = r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment";
-
-/// Reads a string value; the registry matches names case-insensitively.
-fn read_string(key: &RegKey, name: &str) -> Result<Option<String>> {
-    match key.get_raw_value(name) {
-        Ok(raw) if matches!(raw.vtype, REG_SZ | REG_EXPAND_SZ) => {
-            Ok(Some(String::from_reg_value(&raw)?))
-        }
-        Ok(_) => Ok(None),
-        Err(e) if e.kind() == ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e).with_context(|| format!("cannot read {name}")),
-    }
-}
 
 fn defined_machine_wide(key: &str) -> Result<bool> {
     let machine = RegKey::predef(HKEY_LOCAL_MACHINE)
@@ -73,8 +61,24 @@ pub fn list() -> Result<BTreeMap<String, String>> {
     Ok(vars)
 }
 
-pub fn get(key: &str) -> Result<Option<String>> {
-    read_string(&open(KEY_READ)?, key)
+/// Windows keeps no delete marker: a deleted value is gone from the registry.
+pub fn deleted() -> Result<BTreeSet<String>> {
+    Ok(BTreeSet::new())
+}
+
+/// Names defined machine-wide (read-only).
+pub fn machine_names() -> Result<BTreeSet<String>> {
+    let machine = RegKey::predef(HKEY_LOCAL_MACHINE)
+        .open_subkey_with_flags(MACHINE_ENV, KEY_READ)
+        .context("cannot open the machine environment")?;
+    let mut names = BTreeSet::new();
+    for entry in machine.enum_values() {
+        let (name, raw) = entry?;
+        if matches!(raw.vtype, REG_SZ | REG_EXPAND_SZ) {
+            names.insert(name);
+        }
+    }
+    Ok(names)
 }
 
 pub fn set(key: &str, value: &str) -> Result<()> {

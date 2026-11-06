@@ -27,6 +27,7 @@ impl Env {
     fn run(&self, args: &[&str]) -> Output {
         Command::new(env!("CARGO_BIN_EXE_ev"))
             .args(args)
+            .env_clear()
             .env("EV_HOME", self.ev_home())
             .env("HOME", self.root.path())
             .env("ZDOTDIR", self.root.path())
@@ -58,7 +59,7 @@ fn set_then_get_and_list() {
     env.ok(&["set", "FOO", "bar baz"]);
     env.ok(&["set", "A", "1"]);
     assert_eq!(env.ok(&["get", "FOO"]), "bar baz\n");
-    assert_eq!(env.ok(&["list"]), "A=1\nFOO=bar baz\n");
+    assert_eq!(env.ok(&["list", "--ev"]), "A=1\nFOO=bar baz\n");
 }
 
 #[test]
@@ -84,7 +85,7 @@ fn unset_sets_empty() {
     assert_eq!(env.ok(&["get", "FOO"]), "\n");
     assert_eq!(env.read("vars"), "FOO=\n");
     assert_eq!(env.read("env.sh"), "export FOO=''\n");
-    assert_eq!(env.ok(&["list"]), "FOO=\n");
+    assert_eq!(env.ok(&["list", "--ev"]), "FOO=\n");
 }
 
 #[test]
@@ -105,7 +106,7 @@ fn rm_alias_deletes() {
     assert_eq!(env.ok(&["get", "FOO"]), "1\n");
     env.ok(&["rm", "FOO"]);
     assert_eq!(env.read("vars"), "-FOO\n");
-    assert_eq!(env.ok(&["list"]), "");
+    assert_eq!(env.ok(&["list", "--ev"]), "");
 }
 
 #[test]
@@ -272,7 +273,7 @@ fn piped_output_ignores_descriptions() {
     env.ok(&["set", "FOO", "bar", "-d", "described"]);
     env.ok(&["set", "HOME", "/h", "--yes"]);
     assert_eq!(env.ok(&["get", "FOO"]), "bar\n");
-    assert_eq!(env.ok(&["list"]), "FOO=bar\nHOME=/h\n");
+    assert_eq!(env.ok(&["list", "--ev"]), "FOO=bar\nHOME=/h\n");
 }
 
 #[test]
@@ -316,4 +317,95 @@ fn delete_with_rc_hits_needs_yes_without_terminal() {
     assert!(!env.run(&["delete", "FOO"]).status.success());
     assert_eq!(std::fs::read_to_string(env.rc()).unwrap(), "export FOO=old\n");
     assert_eq!(env.read("vars"), "");
+}
+
+#[test]
+fn list_includes_inherited_process_vars() {
+    let env = Env::new();
+    let out = Command::new(env!("CARGO_BIN_EXE_ev"))
+        .arg("list")
+        .env_clear()
+        .env("EV_HOME", env.ev_home())
+        .env("HOME", env.root.path())
+        .env("EV_SYSTEM_ROOT", env.root.path().join("sys"))
+        .env("INHERITED_VAR", "from-parent")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(text.lines().any(|l| l == "INHERITED_VAR=from-parent"), "{text}");
+}
+
+#[test]
+fn get_finds_inherited_process_var() {
+    let env = Env::new();
+    let out = Command::new(env!("CARGO_BIN_EXE_ev"))
+        .args(["get", "INHERITED_VAR"])
+        .env_clear()
+        .env("EV_HOME", env.ev_home())
+        .env("HOME", env.root.path())
+        .env("EV_SYSTEM_ROOT", env.root.path().join("sys"))
+        .env("INHERITED_VAR", "from-parent")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert_eq!(String::from_utf8(out.stdout).unwrap(), "from-parent\n");
+}
+
+#[test]
+fn ev_store_overrides_inherited_value() {
+    let env = Env::new();
+    env.ok(&["set", "INHERITED_VAR", "mine"]);
+    let out = Command::new(env!("CARGO_BIN_EXE_ev"))
+        .arg("list")
+        .env_clear()
+        .env("EV_HOME", env.ev_home())
+        .env("HOME", env.root.path())
+        .env("EV_SYSTEM_ROOT", env.root.path().join("sys"))
+        .env("INHERITED_VAR", "from-parent")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    let text = String::from_utf8(out.stdout).unwrap();
+    let lines: Vec<&str> = text.lines().filter(|l| l.starts_with("INHERITED_VAR")).collect();
+    assert_eq!(lines, ["INHERITED_VAR=mine"]);
+}
+
+#[test]
+fn list_ev_shows_only_managed_vars() {
+    let env = Env::new();
+    env.ok(&["set", "MINE", "1"]);
+    let out = Command::new(env!("CARGO_BIN_EXE_ev"))
+        .args(["list", "--ev"])
+        .env_clear()
+        .env("EV_HOME", env.ev_home())
+        .env("HOME", env.root.path())
+        .env("EV_SYSTEM_ROOT", env.root.path().join("sys"))
+        .env("INHERITED_VAR", "from-parent")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8(out.stdout).unwrap(), "MINE=1\n");
+}
+
+#[test]
+fn delete_marker_hides_inherited_var() {
+    let env = Env::new();
+    env.ok(&["delete", "INHERITED_VAR"]);
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_ev"))
+            .args(args)
+            .env_clear()
+            .env("EV_HOME", env.ev_home())
+            .env("HOME", env.root.path())
+            .env("EV_SYSTEM_ROOT", env.root.path().join("sys"))
+            .env("INHERITED_VAR", "from-parent")
+            .stdin(Stdio::null())
+            .output()
+            .unwrap()
+    };
+    let text = String::from_utf8(run(&["list"]).stdout).unwrap();
+    assert!(!text.contains("INHERITED_VAR"), "{text}");
+    assert!(!run(&["get", "INHERITED_VAR"]).status.success());
 }

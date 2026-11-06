@@ -266,7 +266,6 @@ pub fn scan(key: &str) -> Vec<Hit> {
 }
 
 /// Every variable assigned in those files, with the first file that does it.
-#[allow(dead_code)] // consumed by `ev list` in a later change
 pub fn scan_all() -> BTreeMap<String, String> {
     scan_all_in(&Roots::from_env())
 }
