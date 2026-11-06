@@ -93,27 +93,41 @@ pub fn set(key: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
+/// Deletes the user value and, when the variable is also defined
+/// machine-wide, that one too (which needs an elevated process); otherwise
+/// the variable would still be there and "Done" would be wrong.
 pub fn delete(key: &str) -> Result<()> {
-    match open(KEY_WRITE)?.delete_value(key) {
+    let user_removed = match open(KEY_WRITE)?.delete_value(key) {
         Ok(()) => {
             broadcast_change();
-            Ok(())
+            true
         }
-        Err(e) if e.kind() == ErrorKind::NotFound => delete_machine_wide(key),
-        Err(e) => Err(e).with_context(|| format!("cannot delete {key}")),
+        Err(e) if e.kind() == ErrorKind::NotFound => false,
+        Err(e) => return Err(e).with_context(|| format!("cannot delete {key}")),
+    };
+    delete_machine_wide(key, user_removed)
+}
+
+fn admin_hint(key: &str, user_removed: bool) -> String {
+    if user_removed {
+        format!(
+            "removed the user value of {key}, but it is still defined machine-wide; \
+             run as administrator to delete it there too"
+        )
+    } else {
+        format!("{key} is defined machine-wide; run as administrator to delete it")
     }
 }
 
 /// Deletes a machine-wide value; needs an elevated (administrator) process.
-fn delete_machine_wide(key: &str) -> Result<()> {
+fn delete_machine_wide(key: &str, user_removed: bool) -> Result<()> {
     if !defined_machine_wide(key)? {
         return Ok(());
     }
-    let admin_hint = || format!("{key} is defined machine-wide; run as administrator to delete it");
     let machine = RegKey::predef(HKEY_LOCAL_MACHINE)
         .open_subkey_with_flags(MACHINE_ENV, KEY_WRITE)
         .map_err(|e| match e.kind() {
-            ErrorKind::PermissionDenied => anyhow::anyhow!(admin_hint()),
+            ErrorKind::PermissionDenied => anyhow::anyhow!(admin_hint(key, user_removed)),
             _ => anyhow::Error::new(e).context("cannot open the machine environment"),
         })?;
     match machine.delete_value(key) {
@@ -121,7 +135,7 @@ fn delete_machine_wide(key: &str) -> Result<()> {
             broadcast_change();
             Ok(())
         }
-        Err(e) if e.kind() == ErrorKind::PermissionDenied => bail!(admin_hint()),
+        Err(e) if e.kind() == ErrorKind::PermissionDenied => bail!(admin_hint(key, user_removed)),
         Err(e) => Err(e).with_context(|| format!("cannot delete {key}")),
     }
 }
@@ -139,6 +153,13 @@ mod tests {
     fn percent_selects_expand_type() {
         assert_eq!(value_type("plain"), REG_SZ);
         assert_eq!(value_type("%PATH%;x"), REG_EXPAND_SZ);
+    }
+
+    #[test]
+    fn admin_hint_says_what_was_removed() {
+        assert!(admin_hint("A", true).contains("removed the user value of A"));
+        assert!(admin_hint("A", true).contains("still defined machine-wide"));
+        assert!(!admin_hint("A", false).contains("removed"));
     }
 
     #[cfg(windows)]
