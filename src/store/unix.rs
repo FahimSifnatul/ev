@@ -95,35 +95,77 @@ pub(crate) fn config_dir() -> Result<PathBuf> {
     }
 }
 
-/// The shell startup file that should load ev's generated env file.
-fn rc_file() -> Result<(PathBuf, bool)> {
+/// Every startup file that should load ev's generated env file for the
+/// current shell, with whether it is fish syntax.
+fn rc_files() -> Result<Vec<(PathBuf, bool)>> {
     let shell = env::var("SHELL").unwrap_or_default();
     let home = home()?;
-    let rc = match shell.rsplit('/').next().unwrap_or_default() {
-        "zsh" => (
-            env::var_os("ZDOTDIR")
-                .map_or(home, PathBuf::from)
-                .join(".zshrc"),
-            false,
-        ),
+    let files = match shell.rsplit('/').next().unwrap_or_default() {
+        // .zshenv is read by every zsh invocation (scripts, `zsh -c`), but
+        // .zshrc and .zprofile come after it, so hook .zshrc too and ev wins
+        // in interactive shells. A ZDOTDIR exported from ~/.zshenv is only
+        // known after that file ran, so ~/.zshenv is hooked as well.
+        "zsh" => {
+            let zdot = crate::sources::custom_zdotdir(Some(&home));
+            let mut files = Vec::new();
+            if let Some(zdot) = &zdot {
+                files.push((home.join(".zshenv"), false));
+                files.push((zdot.join(".zshenv"), false));
+                files.push((zdot.join(".zshrc"), false));
+            } else {
+                files.push((home.join(".zshenv"), false));
+                files.push((home.join(".zshrc"), false));
+            }
+            files
+        }
         "bash" if cfg!(target_os = "macos") => {
             // Terminal.app starts login shells, which do not read .bashrc
             let profile = home.join(".profile");
             let bash_profile = home.join(".bash_profile");
-            (
+            vec![(
                 if bash_profile.exists() || !profile.exists() {
                     bash_profile
                 } else {
                     profile
                 },
                 false,
-            )
+            )]
         }
-        "bash" => (home.join(".bashrc"), false),
-        "fish" => (xdg_config()?.join("fish/conf.d/ev.fish"), true),
-        _ => (home.join(".profile"), false),
+        // .bashrc covers interactive shells, .profile login shells
+        "bash" => vec![(home.join(".bashrc"), false), (home.join(".profile"), false)],
+        "fish" => vec![(xdg_config()?.join("fish/conf.d/ev.fish"), true)],
+        _ => vec![(home.join(".profile"), false)],
     };
-    Ok(rc)
+    Ok(files)
+}
+
+/// Definitions of `key` in startup files that sit after ev's hook line in the
+/// same file, so they override ev's value in new shells. Best effort: any
+/// error yields no hits.
+pub fn overriding_hits(key: &str) -> Vec<crate::sources::Hit> {
+    let (Ok(dir), Ok(files)) = (config_dir(), rc_files()) else {
+        return Vec::new();
+    };
+    let mut hooks = Vec::new();
+    for (file, fish) in files {
+        let Ok(text) = fs::read_to_string(&file) else { continue };
+        let hook = hook_line(&dir, fish);
+        if let Some(i) = text.lines().position(|l| l.trim_end() == hook) {
+            hooks.push((file, i + 1));
+        }
+    }
+    later_than_hooks(crate::sources::scan(key), &hooks)
+}
+
+/// The hits in a hooked file whose line number is greater than that file's
+/// hook line number.
+fn later_than_hooks(
+    hits: Vec<crate::sources::Hit>,
+    hooks: &[(PathBuf, usize)],
+) -> Vec<crate::sources::Hit> {
+    hits.into_iter()
+        .filter(|h| hooks.iter().any(|(f, n)| *f == h.file && h.line_no > *n))
+        .collect()
 }
 
 fn hook_line(dir: &Path, fish: bool) -> String {
@@ -137,18 +179,25 @@ fn hook_line(dir: &Path, fish: bool) -> String {
 
 pub(crate) fn write_atomic(path: &Path, content: &str) -> Result<()> {
     let mut tmp = path.as_os_str().to_owned();
-    tmp.push(".tmp");
+    tmp.push(format!(".{}.tmp", std::process::id()));
     let tmp = PathBuf::from(tmp);
     // values may be secrets: owner-only
-    fs::OpenOptions::new()
+    let written = fs::OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(true)
         .mode(0o600)
         .open(&tmp)
         .and_then(|mut f| f.write_all(content.as_bytes()))
-        .with_context(|| format!("writing {}", tmp.display()))?;
-    fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))
+        .with_context(|| format!("writing {}", tmp.display()));
+    if let Err(err) = written {
+        let _ = fs::remove_file(&tmp);
+        return Err(err);
+    }
+    fs::rename(&tmp, path).with_context(|| {
+        let _ = fs::remove_file(&tmp);
+        format!("replacing {}", path.display())
+    })
 }
 
 fn read_entries(dir: &Path) -> Result<Vec<Entry>> {
@@ -161,14 +210,32 @@ fn read_entries(dir: &Path) -> Result<Vec<Entry>> {
 
 fn write_all(dir: &Path, entries: &[Entry]) -> Result<()> {
     fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-    write_atomic(&dir.join("vars"), &serialize(entries))?;
+    // `vars` is the source of truth and goes last: it is the commit point
     write_atomic(&dir.join("env.sh"), &render_sh(entries))?;
-    write_atomic(&dir.join("env.fish"), &render_fish(entries))
+    write_atomic(&dir.join("env.fish"), &render_fish(entries))?;
+    write_atomic(&dir.join("vars"), &serialize(entries))
+}
+
+/// Takes the exclusive store lock; it is released when the file is dropped.
+fn lock_store(dir: &Path) -> Result<fs::File> {
+    fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(dir.join("lock"))
+        .context("opening lock file")?;
+    lock.lock().context("locking store")?;
+    Ok(lock)
 }
 
 fn change(new: Entry) -> Result<()> {
     let dir = config_dir()?;
+    let lock = lock_store(&dir)?;
     write_all(&dir, &replace(read_entries(&dir)?, new))?;
+    drop(lock);
     // the hint is advisory: a failed check must not fail a saved change
     if matches!(hook_installed(&dir), Ok(false)) {
         eprintln!("Run 'ev init' once so new shells load these variables.");
@@ -176,16 +243,23 @@ fn change(new: Entry) -> Result<()> {
     Ok(())
 }
 
-fn hook_installed(dir: &Path) -> Result<bool> {
-    let (rc, fish) = rc_file()?;
-    match fs::read(&rc) {
+fn has_hook(rc: &Path, line: &str) -> Result<bool> {
+    match fs::read(rc) {
         // lossy: the rc may hold non-UTF-8 bytes we must not choke on
-        Ok(bytes) => Ok(String::from_utf8_lossy(&bytes)
-            .lines()
-            .any(|l| l == hook_line(dir, fish))),
+        Ok(bytes) => Ok(String::from_utf8_lossy(&bytes).lines().any(|l| l == line)),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
         Err(err) => Err(err).with_context(|| format!("reading {}", rc.display())),
     }
+}
+
+/// True only when every target file already has the hook.
+fn hook_installed(dir: &Path) -> Result<bool> {
+    for (rc, fish) in rc_files()? {
+        if !has_hook(&rc, &hook_line(dir, fish))? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 pub fn list() -> Result<BTreeMap<String, String>> {
@@ -219,28 +293,31 @@ pub fn delete(key: &str) -> Result<()> {
 
 pub fn init() -> Result<()> {
     let dir = config_dir()?;
+    let lock = lock_store(&dir)?;
     let entries = read_entries(&dir)?;
     write_all(&dir, &entries)?;
+    drop(lock);
 
-    let (rc, fish) = rc_file()?;
-    if hook_installed(&dir)? {
-        println!("{} already loads ev", rc.display());
-        return Ok(());
+    for (rc, fish) in rc_files()? {
+        let line = hook_line(&dir, fish);
+        if has_hook(&rc, &line)? {
+            println!("{} already loads ev", rc.display());
+            continue;
+        }
+        if let Some(parent) = rc.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&rc)
+            .with_context(|| format!("opening {}", rc.display()))?;
+        write!(file, "\n{line}\n").with_context(|| format!("writing {}", rc.display()))?;
+        println!(
+            "Added ev to {}. Open a new terminal to load it.",
+            rc.display()
+        );
     }
-    if let Some(parent) = rc.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&rc)
-        .with_context(|| format!("opening {}", rc.display()))?;
-    write!(file, "\n{}\n", hook_line(&dir, fish))
-        .with_context(|| format!("writing {}", rc.display()))?;
-    println!(
-        "Added ev to {}. Open a new terminal to load it.",
-        rc.display()
-    );
     Ok(())
 }
 
@@ -295,6 +372,20 @@ mod tests {
         let entries = vec![set_entry("A", "it's"), Entry::Unset("B".into())];
         assert_eq!(render_sh(&entries), "export A='it'\\''s'\nunset B\n");
         assert_eq!(render_fish(&entries), "set -gx A 'it\\'s'\nset -e B\n");
+    }
+
+    #[test]
+    fn finds_hits_after_hook_only() {
+        let hit = |f: &str, n: usize| crate::sources::Hit {
+            file: PathBuf::from(f),
+            line_no: n,
+            text: String::new(),
+            editable: true,
+            why: "",
+        };
+        let hooks = vec![(PathBuf::from("/h/.zshenv"), 3)];
+        let hits = vec![hit("/h/.zshenv", 5), hit("/h/.zshenv", 1), hit("/h/.zshrc", 9)];
+        assert_eq!(later_than_hooks(hits, &hooks), vec![hit("/h/.zshenv", 5)]);
     }
 
     #[test]
