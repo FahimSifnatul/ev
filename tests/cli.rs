@@ -409,3 +409,136 @@ fn delete_marker_hides_inherited_var() {
     assert!(!text.contains("INHERITED_VAR"), "{text}");
     assert!(!run(&["get", "INHERITED_VAR"]).status.success());
 }
+
+// --- app providers (go) ---
+
+fn go_installed() -> bool {
+    Command::new("go")
+        .arg("version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+impl Env {
+    /// Like `run`, but with `go` on PATH and its config file inside the tempdir.
+    fn run_go(&self, args: &[&str]) -> Output {
+        Command::new(env!("CARGO_BIN_EXE_ev"))
+            .args(args)
+            .env_clear()
+            .env("EV_HOME", self.ev_home())
+            .env("HOME", self.root.path())
+            .env("ZDOTDIR", self.root.path())
+            .env("SHELL", "/bin/zsh")
+            .env("EV_SYSTEM_ROOT", self.root.path().join("sys"))
+            .env("PATH", std::env::var_os("PATH").unwrap())
+            .env("GOENV", self.root.path().join("goenv"))
+            .stdin(Stdio::null())
+            .output()
+            .unwrap()
+    }
+
+    fn ok_go(&self, args: &[&str]) -> String {
+        let out = self.run_go(args);
+        assert!(
+            out.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).unwrap()
+    }
+}
+
+#[test]
+fn set_then_get_go_var() {
+    if !go_installed() {
+        return;
+    }
+    let env = Env::new();
+    env.ok_go(&["set", "GOPROXY", "direct", "--app", "go"]);
+    assert_eq!(env.ok_go(&["get", "GOPROXY", "--app", "go"]), "direct\n");
+    // the value lives in go's file, not in ev's store
+    assert_eq!(env.read("vars"), "");
+    // defaults are readable too
+    assert!(!env.ok_go(&["get", "GOOS", "--app", "go"]).trim().is_empty());
+}
+
+#[test]
+fn unset_empties_go_var() {
+    if !go_installed() {
+        return;
+    }
+    let env = Env::new();
+    env.ok_go(&["set", "GOPROXY", "direct", "--app", "go"]);
+    env.ok_go(&["unset", "GOPROXY", "--app", "go"]);
+    assert!(!env.run_go(&["get", "GOPROXY", "--app", "go"]).status.success());
+}
+
+#[test]
+fn delete_resets_go_var() {
+    if !go_installed() {
+        return;
+    }
+    let env = Env::new();
+    env.ok_go(&["set", "GOPROXY", "direct", "--app", "go"]);
+    env.ok_go(&["delete", "GOPROXY", "--app", "go"]);
+    assert_ne!(env.ok_go(&["get", "GOPROXY", "--app", "go"]), "direct\n");
+    assert!(!std::fs::read_to_string(env.root.path().join("goenv"))
+        .unwrap_or_default()
+        .contains("GOPROXY=direct"));
+}
+
+#[test]
+fn delete_without_app_also_clears_go_var() {
+    if !go_installed() {
+        return;
+    }
+    let env = Env::new();
+    env.ok_go(&["set", "GOPROXY", "direct", "--app", "go"]);
+    env.ok_go(&["delete", "GOPROXY"]);
+    assert_ne!(env.ok_go(&["get", "GOPROXY", "--app", "go"]), "direct\n");
+    assert_eq!(env.read("vars"), "-GOPROXY\n");
+}
+
+#[test]
+fn list_shows_go_source() {
+    if !go_installed() {
+        return;
+    }
+    let env = Env::new();
+    env.ok_go(&["set", "GOPROXY", "direct", "--app", "go"]);
+    assert!(env.ok_go(&["list"]).lines().any(|l| l == "GOPROXY=direct"));
+    // go values are not ev-managed
+    assert!(!env.ok_go(&["list", "--ev"]).contains("GOPROXY"));
+}
+
+#[test]
+fn unknown_app_is_rejected() {
+    let env = Env::new();
+    let out = env.run(&["set", "A", "1", "--app", "nope"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("unknown app 'nope'"));
+    assert_eq!(env.read("vars"), "");
+}
+
+#[test]
+fn unavailable_app_is_rejected() {
+    // no PATH at all: go cannot be found
+    let env = Env::new();
+    for args in [
+        &["get", "GOOS", "--app", "go"][..],
+        &["set", "GOPROXY", "x", "--app", "go"][..],
+    ] {
+        let out = env.run(args);
+        assert!(!out.status.success());
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("not available"),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    // the merged list just skips it
+    env.ok(&["list"]);
+}

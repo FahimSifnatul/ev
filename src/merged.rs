@@ -1,14 +1,14 @@
 //! Every variable the user can see, each with the place it comes from.
 //!
 //! Layers are applied from weakest to strongest; a later layer replaces the
-//! value and the source of an earlier one. A new provider is one more
-//! `overlay` call in `collect`.
+//! value and the source of an earlier one: process environment, app
+//! providers (labelled with the app's name), then ev's own store.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::Result;
 
-use crate::store;
+use crate::{apps, store};
 
 /// Source label of variables that no other layer claims.
 const PROCESS: &str = "env";
@@ -75,16 +75,21 @@ impl Merged {
 }
 
 /// Layers over the process environment: `labels` only name where a process
-/// variable was defined, `ev` replaces values, `hidden` names are dropped.
+/// variable was defined, `apps` replace values and take the app's name as
+/// source, `ev` replaces values, `hidden` names are dropped.
 fn merge(
     process: impl IntoIterator<Item = (String, String)>,
     labels: &BTreeMap<String, String>,
+    apps: Vec<(&str, BTreeMap<String, String>)>,
     ev: BTreeMap<String, String>,
     hidden: &BTreeSet<String>,
 ) -> Merged {
     let mut merged = Merged::default();
     merged.overlay(process, PROCESS);
     merged.relabel(labels);
+    for (name, vars) in apps {
+        merged.overlay(vars, name);
+    }
     let ev = ev
         .into_iter()
         .filter(|(name, _)| !keeps_process_value(name, &merged, cfg!(windows)))
@@ -110,7 +115,7 @@ pub fn ev_only() -> Result<Merged> {
 /// The process environment, labelled and overridden by ev's store.
 pub fn collect() -> Result<Merged> {
     let process = std::env::vars_os().filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)));
-    Ok(merge(process, &labels(), store::list()?, &store::deleted()?))
+    Ok(merge(process, &labels(), apps::listed(), store::list()?, &store::deleted()?))
 }
 
 /// Where the system says a variable is defined: startup files on unix,
@@ -175,7 +180,7 @@ mod tests {
 
     #[test]
     fn process_vars_are_labelled_env() {
-        let merged = merge(pairs(&[("A", "1")]), &BTreeMap::new(), BTreeMap::new(), &BTreeSet::new());
+        let merged = merge(pairs(&[("A", "1")]), &BTreeMap::new(), Vec::new(), BTreeMap::new(), &BTreeSet::new());
         assert_eq!(rows(merged), [row("A", "1", "env")]);
     }
 
@@ -184,6 +189,7 @@ mod tests {
         let merged = merge(
             pairs(&[("A", "1"), ("B", "2")]),
             &map(&[("A", "~/.zshrc"), ("C", "~/.profile")]),
+            Vec::new(),
             BTreeMap::new(),
             &BTreeSet::new(),
         );
@@ -195,6 +201,7 @@ mod tests {
         let merged = merge(
             pairs(&[("A", "old")]),
             &map(&[("A", "~/.zshrc")]),
+            Vec::new(),
             map(&[("A", "new"), ("Z", "9")]),
             &BTreeSet::new(),
         );
@@ -202,9 +209,29 @@ mod tests {
     }
 
     #[test]
+    fn apps_sit_between_process_and_ev_store() {
+        let merged = merge(
+            pairs(&[("A", "proc"), ("B", "proc"), ("C", "proc")]),
+            &map(&[("A", "~/.zshrc")]),
+            vec![("go", map(&[("A", "go"), ("B", "go"), ("D", "go")]))],
+            map(&[("B", "ev")]),
+            &BTreeSet::new(),
+        );
+        assert_eq!(
+            rows(merged),
+            [
+                row("A", "go", "go"),
+                row("B", "ev", EV_STORE),
+                row("C", "proc", "env"),
+                row("D", "go", "go"),
+            ]
+        );
+    }
+
+    #[test]
     fn hidden_names_are_dropped() {
         let hidden: BTreeSet<String> = ["A".to_string()].into();
-        let merged = merge(pairs(&[("A", "1"), ("B", "2")]), &BTreeMap::new(), BTreeMap::new(), &hidden);
+        let merged = merge(pairs(&[("A", "1"), ("B", "2")]), &BTreeMap::new(), Vec::new(), BTreeMap::new(), &hidden);
         assert!(merged.get("A").is_none());
         assert_eq!(merged.get("B").map(|r| r.value.as_str()), Some("2"));
     }
