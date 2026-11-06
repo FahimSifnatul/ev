@@ -89,18 +89,35 @@ pub fn set(key: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn unset(key: &str) -> Result<()> {
+pub fn delete(key: &str) -> Result<()> {
     match open(KEY_WRITE)?.delete_value(key) {
         Ok(()) => {
             broadcast_change();
             Ok(())
         }
-        Err(e) if e.kind() == ErrorKind::NotFound => {
-            if defined_machine_wide(key)? {
-                bail!("{key} is defined machine-wide; removing it needs an administrator and ev does not edit it.");
-            }
+        Err(e) if e.kind() == ErrorKind::NotFound => delete_machine_wide(key),
+        Err(e) => Err(e).with_context(|| format!("cannot delete {key}")),
+    }
+}
+
+/// Deletes a machine-wide value; needs an elevated (administrator) process.
+fn delete_machine_wide(key: &str) -> Result<()> {
+    if !defined_machine_wide(key)? {
+        return Ok(());
+    }
+    let admin_hint = || format!("{key} is defined machine-wide; run as administrator to delete it");
+    let machine = RegKey::predef(HKEY_LOCAL_MACHINE)
+        .open_subkey_with_flags(MACHINE_ENV, KEY_WRITE)
+        .map_err(|e| match e.kind() {
+            ErrorKind::PermissionDenied => anyhow::anyhow!(admin_hint()),
+            _ => anyhow::Error::new(e).context("cannot open the machine environment"),
+        })?;
+    match machine.delete_value(key) {
+        Ok(()) => {
+            broadcast_change();
             Ok(())
         }
+        Err(e) if e.kind() == ErrorKind::PermissionDenied => bail!(admin_hint()),
         Err(e) => Err(e).with_context(|| format!("cannot delete {key}")),
     }
 }
@@ -126,7 +143,7 @@ mod tests {
     #[cfg(windows)]
     impl Drop for Cleanup {
         fn drop(&mut self) {
-            let _ = unset(&self.0);
+            let _ = delete(&self.0);
         }
     }
 
@@ -147,8 +164,8 @@ mod tests {
         assert_eq!(raw.vtype, REG_EXPAND_SZ);
         assert_eq!(list().unwrap()[&name], "%TEMP%\\x");
 
-        unset(&name).unwrap();
+        delete(&name).unwrap();
         assert!(!list().unwrap().contains_key(&name));
-        unset(&name).unwrap();
+        delete(&name).unwrap();
     }
 }

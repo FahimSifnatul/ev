@@ -202,7 +202,7 @@ pub fn set(key: &str, value: &str) -> Result<()> {
     change(Entry::Set(key.to_string(), value.to_string()))
 }
 
-pub fn unset(key: &str) -> Result<()> {
+pub fn delete(key: &str) -> Result<()> {
     change(Entry::Unset(key.to_string()))
 }
 

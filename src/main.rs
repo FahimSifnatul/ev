@@ -32,9 +32,11 @@ enum Command {
         #[arg(short, long)]
         desc: Option<String>,
     },
-    /// Remove a variable
-    #[command(aliases = ["delete", "rm"])]
+    /// Keep a variable but make its value empty
     Unset { key: String },
+    /// Remove a variable completely
+    #[command(alias = "rm")]
+    Delete { key: String },
     /// Print a variable's value
     Get { key: String },
     /// List all variables
@@ -74,7 +76,13 @@ fn run(cli: Cli) -> Result<()> {
         Command::Unset { key } => {
             store::validate_key(&key)?;
             guard(&key, cli.yes)?;
-            store::unset(&key)?;
+            store::set(&key, "")?;
+            done();
+        }
+        Command::Delete { key } => {
+            store::validate_key(&key)?;
+            guard(&key, cli.yes)?;
+            store::delete(&key)?;
             if let Err(err) = notes::remove(&key) {
                 eprintln!("ev: warning: {err:#}");
             }

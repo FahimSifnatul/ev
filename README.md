@@ -33,7 +33,8 @@ ev set EDITOR vim                  # set (alias: add)
 ev get EDITOR                      # print one value
 ev list                            # print everything ev manages
 ev set API_URL x -d "staging API"  # attach a description (--desc)
-ev unset EDITOR                    # remove (aliases: delete, rm)
+ev unset EDITOR                    # keep it, but make the value empty
+ev delete EDITOR                   # remove it completely (alias: rm)
 ev set LD_PRELOAD x --yes          # skip the confirmation for critical variables (-y)
 ```
 
@@ -45,7 +46,7 @@ In a terminal, `ev list` prints a table with a `DESCRIPTION` column and `ev get`
 When output is piped or redirected, nothing changes: `ev list` prints `NAME=value` lines and `ev get` prints just the value, so scripts keep working.
 
 Well-known variables (`HOME`, `PATH`, `JAVA_HOME`, ...) have built-in descriptions; a description you set with `-d` takes precedence.
-`ev set` without `-d` keeps the existing description, and `ev unset` removes it.
+`ev set` without `-d` keeps the existing description, and `ev delete` removes it (`ev unset` keeps it).
 `ev set KEY value -d ""` clears your description for `KEY`.
 Your descriptions are stored in a `descriptions` file: `~/.config/ev/` on macOS/Linux (or `$XDG_CONFIG_HOME/ev`, or `$EV_HOME`), `%APPDATA%\ev` on Windows (or `%EV_HOME%` if set).
 

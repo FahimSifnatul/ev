@@ -76,10 +76,21 @@ fn set_overwrites() {
 }
 
 #[test]
-fn unset_removes_and_records_marker() {
+fn unset_sets_empty() {
     let env = Env::new();
     env.ok(&["set", "FOO", "bar"]);
     env.ok(&["unset", "FOO"]);
+    assert_eq!(env.ok(&["get", "FOO"]), "\n");
+    assert_eq!(env.read("vars"), "FOO=\n");
+    assert_eq!(env.read("env.sh"), "export FOO=''\n");
+    assert_eq!(env.ok(&["list"]), "FOO=\n");
+}
+
+#[test]
+fn delete_records_marker() {
+    let env = Env::new();
+    env.ok(&["set", "FOO", "bar"]);
+    env.ok(&["delete", "FOO"]);
     assert!(!env.run(&["get", "FOO"]).status.success());
     assert_eq!(env.read("vars"), "-FOO\n");
     assert_eq!(env.read("env.sh"), "unset FOO\n");
@@ -87,14 +98,21 @@ fn unset_removes_and_records_marker() {
 }
 
 #[test]
-fn aliases_work() {
+fn rm_alias_deletes() {
     let env = Env::new();
     env.ok(&["add", "FOO", "1"]);
     assert_eq!(env.ok(&["get", "FOO"]), "1\n");
-    env.ok(&["delete", "FOO"]);
-    env.ok(&["add", "FOO", "2"]);
     env.ok(&["rm", "FOO"]);
+    assert_eq!(env.read("vars"), "-FOO\n");
     assert_eq!(env.ok(&["list"]), "");
+}
+
+#[test]
+fn unset_no_longer_aliases_delete() {
+    let env = Env::new();
+    env.ok(&["set", "FOO", "1"]);
+    env.ok(&["unset", "FOO"]);
+    assert_eq!(env.read("vars"), "FOO=\n");
 }
 
 #[test]
@@ -210,11 +228,19 @@ fn set_without_desc_keeps_existing_description() {
 }
 
 #[test]
-fn unset_removes_description() {
+fn unset_keeps_description() {
+    let env = Env::new();
+    env.ok(&["set", "FOO", "bar", "-d", "still here"]);
+    env.ok(&["unset", "FOO"]);
+    assert_eq!(env.read("descriptions"), "FOO=still here\n");
+}
+
+#[test]
+fn delete_removes_description() {
     let env = Env::new();
     env.ok(&["set", "FOO", "bar", "-d", "gone soon"]);
     env.ok(&["set", "KEEP", "1", "-d", "stay"]);
-    env.ok(&["unset", "FOO"]);
+    env.ok(&["delete", "FOO"]);
     assert_eq!(env.read("descriptions"), "KEEP=stay\n");
 }
 
