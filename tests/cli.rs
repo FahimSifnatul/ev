@@ -759,3 +759,12 @@ fn set_warns_when_later_startup_line_overrides() {
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(!err.contains("warning: BAR"), "{err}");
 }
+
+#[test]
+fn set_expand_is_windows_only() {
+    let env = Env::new();
+    let out = env.run(&["set", "FOO", "x", "--expand"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--expand is only supported on Windows"));
+    assert_eq!(env.read("vars"), "");
+}

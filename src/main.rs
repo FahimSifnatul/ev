@@ -44,6 +44,9 @@ enum Command {
         /// Change the setting of an app (like go) instead of ev's own store
         #[arg(long)]
         app: Option<String>,
+        /// Store the value so %NAME% references expand when read (Windows only; PATH always does)
+        #[arg(long)]
+        expand: bool,
     },
     /// Keep a variable but make its value empty
     Unset {
@@ -86,15 +89,22 @@ fn main() {
 
 fn run(cli: Cli) -> Result<()> {
     match cli.command {
-        Command::Set { key, value, desc, app } => {
+        Command::Set { key, value, desc, app, expand } => {
             store::validate_key(&key)?;
             store::validate_value(&value)?;
             if let Some(text) = &desc {
                 notes::validate_text(text)?;
             }
+            #[cfg(unix)]
+            if expand {
+                bail!("--expand is only supported on Windows");
+            }
             if let Some(name) = &app {
                 if desc.is_some() {
                     bail!("--desc cannot be used with --app");
+                }
+                if expand {
+                    bail!("--expand cannot be used with --app");
                 }
                 let app = apps::find(name)?;
                 guard(&key, cli.yes)?;
@@ -102,6 +112,9 @@ fn run(cli: Cli) -> Result<()> {
                 return app_done(app.name());
             }
             guard(&key, cli.yes)?;
+            #[cfg(windows)]
+            store::set_with(&key, &value, expand)?;
+            #[cfg(unix)]
             store::set(&key, &value)?;
             #[cfg(unix)]
             for hit in store::overriding_hits(&key) {

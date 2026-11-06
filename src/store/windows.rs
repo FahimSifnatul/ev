@@ -26,8 +26,10 @@ fn defined_machine_wide(key: &str) -> Result<bool> {
     Ok(machine.get_raw_value(key).is_ok()) // any type counts; not-found or unreadable means no
 }
 
-fn value_type(value: &str) -> RegType {
-    if value.contains('%') {
+/// REG_EXPAND_SZ only when asked for (or for PATH, which relies on it);
+/// otherwise a literal `%` must stay literal.
+fn value_type(key: &str, expand: bool) -> RegType {
+    if expand || key.eq_ignore_ascii_case("PATH") {
         REG_EXPAND_SZ
     } else {
         REG_SZ
@@ -82,8 +84,12 @@ pub fn machine_names() -> Result<BTreeSet<String>> {
 }
 
 pub fn set(key: &str, value: &str) -> Result<()> {
+    set_with(key, value, false)
+}
+
+pub fn set_with(key: &str, value: &str, expand: bool) -> Result<()> {
     let raw = RegValue {
-        vtype: value_type(value),
+        vtype: value_type(key, expand),
         ..value.to_reg_value()
     };
     open(KEY_WRITE)?
@@ -151,8 +157,10 @@ mod tests {
 
     #[test]
     fn percent_selects_expand_type() {
-        assert_eq!(value_type("plain"), REG_SZ);
-        assert_eq!(value_type("%PATH%;x"), REG_EXPAND_SZ);
+        assert_eq!(value_type("A", false), REG_SZ);
+        assert_eq!(value_type("A", true), REG_EXPAND_SZ);
+        assert_eq!(value_type("PATH", false), REG_EXPAND_SZ);
+        assert_eq!(value_type("Path", false), REG_EXPAND_SZ);
     }
 
     #[test]
@@ -185,6 +193,11 @@ mod tests {
         );
 
         set(&name, "%TEMP%\\x").unwrap();
+        let raw = open(KEY_READ).unwrap().get_raw_value(&name).unwrap();
+        assert_eq!(raw.vtype, REG_SZ);
+        assert_eq!(list().unwrap()[&name], "%TEMP%\\x");
+
+        set_with(&name, "%TEMP%\\x", true).unwrap();
         let raw = open(KEY_READ).unwrap().get_raw_value(&name).unwrap();
         assert_eq!(raw.vtype, REG_EXPAND_SZ);
         assert_eq!(list().unwrap()[&name], "%TEMP%\\x");
