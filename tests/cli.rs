@@ -736,3 +736,26 @@ fn parallel_sets_do_not_lose_updates() {
         assert!(listed.contains(&format!("K{i}=v\n")), "missing K{i}: {listed}");
     }
 }
+
+#[test]
+fn set_warns_when_later_startup_line_overrides() {
+    let env = Env::new();
+    env.ok(&["init"]);
+    let hook = std::fs::read_to_string(env.zshenv()).unwrap();
+    std::fs::write(env.zshenv(), format!("{hook}export FOO=2\n")).unwrap();
+    let out = env.run(&["set", "FOO", "1"]);
+    assert!(out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    let want = format!(
+        "ev: warning: FOO is also set in {}:",
+        env.zshenv().display()
+    );
+    assert!(err.contains(&want), "{err}");
+    assert!(err.contains(", after ev loads; that value wins in new shells"), "{err}");
+
+    std::fs::write(env.zshenv(), format!("export BAR=2\n{hook}")).unwrap();
+    let out = env.run(&["set", "BAR", "1"]);
+    assert!(out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!err.contains("warning: BAR"), "{err}");
+}

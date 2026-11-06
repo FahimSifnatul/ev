@@ -103,6 +103,14 @@ fn run(cli: Cli) -> Result<()> {
             }
             guard(&key, cli.yes)?;
             store::set(&key, &value)?;
+            #[cfg(unix)]
+            for hit in store::overriding_hits(&key) {
+                eprintln!(
+                    "ev: warning: {key} is also set in {}:{}, after ev loads; that value wins in new shells",
+                    hit.file.display(),
+                    hit.line_no
+                );
+            }
             if let Some(text) = &desc {
                 // a blank description clears ours
                 let saved = if text.trim().is_empty() {

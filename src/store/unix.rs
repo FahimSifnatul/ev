@@ -129,6 +129,35 @@ fn rc_files() -> Result<Vec<(PathBuf, bool)>> {
     Ok(files)
 }
 
+/// Definitions of `key` in startup files that sit after ev's hook line in the
+/// same file, so they override ev's value in new shells. Best effort: any
+/// error yields no hits.
+pub fn overriding_hits(key: &str) -> Vec<crate::sources::Hit> {
+    let (Ok(dir), Ok(files)) = (config_dir(), rc_files()) else {
+        return Vec::new();
+    };
+    let mut hooks = Vec::new();
+    for (file, fish) in files {
+        let Ok(text) = fs::read_to_string(&file) else { continue };
+        let hook = hook_line(&dir, fish);
+        if let Some(i) = text.lines().position(|l| l.trim_end() == hook) {
+            hooks.push((file, i + 1));
+        }
+    }
+    later_than_hooks(crate::sources::scan(key), &hooks)
+}
+
+/// The hits in a hooked file whose line number is greater than that file's
+/// hook line number.
+fn later_than_hooks(
+    hits: Vec<crate::sources::Hit>,
+    hooks: &[(PathBuf, usize)],
+) -> Vec<crate::sources::Hit> {
+    hits.into_iter()
+        .filter(|h| hooks.iter().any(|(f, n)| *f == h.file && h.line_no > *n))
+        .collect()
+}
+
 fn hook_line(dir: &Path, fish: bool) -> String {
     let dir = dir.display();
     if fish {
@@ -333,6 +362,20 @@ mod tests {
         let entries = vec![set_entry("A", "it's"), Entry::Unset("B".into())];
         assert_eq!(render_sh(&entries), "export A='it'\\''s'\nunset B\n");
         assert_eq!(render_fish(&entries), "set -gx A 'it\\'s'\nset -e B\n");
+    }
+
+    #[test]
+    fn finds_hits_after_hook_only() {
+        let hit = |f: &str, n: usize| crate::sources::Hit {
+            file: PathBuf::from(f),
+            line_no: n,
+            text: String::new(),
+            editable: true,
+            why: "",
+        };
+        let hooks = vec![(PathBuf::from("/h/.zshenv"), 3)];
+        let hits = vec![hit("/h/.zshenv", 5), hit("/h/.zshenv", 1), hit("/h/.zshrc", 9)];
+        assert_eq!(later_than_hooks(hits, &hooks), vec![hit("/h/.zshenv", 5)]);
     }
 
     #[test]
