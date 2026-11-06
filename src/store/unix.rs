@@ -101,13 +101,23 @@ fn rc_files() -> Result<Vec<(PathBuf, bool)>> {
     let shell = env::var("SHELL").unwrap_or_default();
     let home = home()?;
     let files = match shell.rsplit('/').next().unwrap_or_default() {
-        // .zshenv is read by every zsh invocation
-        "zsh" => vec![(
-            env::var_os("ZDOTDIR")
-                .map_or(home, PathBuf::from)
-                .join(".zshenv"),
-            false,
-        )],
+        // .zshenv is read by every zsh invocation (scripts, `zsh -c`), but
+        // .zshrc and .zprofile come after it, so hook .zshrc too and ev wins
+        // in interactive shells. A ZDOTDIR exported from ~/.zshenv is only
+        // known after that file ran, so ~/.zshenv is hooked as well.
+        "zsh" => {
+            let zdot = crate::sources::custom_zdotdir(Some(&home));
+            let mut files = Vec::new();
+            if let Some(zdot) = &zdot {
+                files.push((home.join(".zshenv"), false));
+                files.push((zdot.join(".zshenv"), false));
+                files.push((zdot.join(".zshrc"), false));
+            } else {
+                files.push((home.join(".zshenv"), false));
+                files.push((home.join(".zshrc"), false));
+            }
+            files
+        }
         "bash" if cfg!(target_os = "macos") => {
             // Terminal.app starts login shells, which do not read .bashrc
             let profile = home.join(".profile");

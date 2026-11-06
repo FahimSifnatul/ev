@@ -44,7 +44,7 @@ ev set LD_PRELOAD x --yes          # answer yes to confirmations (-y), see below
 
 Changes apply to **new terminals**. Terminals that are already open keep their old environment.
 
-On macOS/Linux, if a shell startup file defines the same variable after ev's hook line, `ev set` warns on stderr: that value wins in new shells. This check is best effort and only looks at the startup files for your `$SHELL`.
+On macOS/Linux, if a shell startup file defines the same variable after ev's hook line, `ev set` warns on stderr: that value wins in new shells. This check is best effort and only looks at the startup files for your `$SHELL` and warns about definitions after the hook line in the hooked files (for zsh that includes `.zshrc`, but not `.zprofile`).
 
 ### Listing and sources
 
@@ -58,11 +58,11 @@ On macOS/Linux, if a shell startup file defines the same variable after ev's hoo
 
 `ev get` uses the same merged view. Piped output is still `NAME=value`, so scripts keep working.
 
-In a terminal, `ev list --ev` also shows names with a pending `ev delete` as rows with an empty `VALUE` and `SOURCE` `ev (deleted)`. A deleted name is also `unset` in new shells, so a variable inherited from the parent process can disappear there. Piped output leaves these rows out.
+In a terminal, `ev list --ev` also shows names with a pending `ev delete` as rows with an empty `VALUE` and `SOURCE` `ev (deleted)`. These rows appear on macOS and Linux only. A deleted name is removed from new shells (the generated env file runs the shell's `unset NAME`), so a variable inherited from the parent process can disappear there. A later `ev set NAME` clears the deleted marker. Piped output leaves these rows out.
 
 ### Deleting from shell startup files (macOS / Linux)
 
-`ev delete KEY` also looks for definitions of `KEY` in your shell startup files (`~/.zshenv`, `~/.zprofile`, `~/.zshrc`, `~/.bashrc`, `~/.bash_profile`, `~/.profile`, fish's `config.fish` and `conf.d/*.fish`) and in the system files (`/etc/profile`, `/etc/profile.d/*.sh`, `/etc/zshenv`, `/etc/zprofile`, `/etc/zshrc`, `/etc/bashrc`, `/etc/bash.bashrc`, `/etc/environment`). It lists every match as `file:line`, asks you to confirm, and then comments each line out as `: # removed by ev: <original line>` (keeping the indentation). The leading `:` is a no-op command, so an `if`, `case` or function body whose only line this was stays valid shell. In fish files the line becomes a plain `# removed by ev: <original line>`. Without a terminal (scripts, CI), `ev delete KEY` stops before changing anything when `KEY` appears in these files or in an app's settings, unless you pass `--yes`.
+`ev delete KEY` also looks for definitions of `KEY` in your shell startup files (`~/.zshenv`, `~/.zprofile`, `~/.zshrc` (and the same zsh files under a different `ZDOTDIR`), `~/.bashrc`, `~/.bash_profile`, `~/.profile`, fish's `config.fish` and `conf.d/*.fish`) and in the system files (`/etc/profile`, `/etc/profile.d/*.sh`, `/etc/zshenv`, `/etc/zprofile`, `/etc/zshrc`, `/etc/bashrc`, `/etc/bash.bashrc`, `/etc/environment`). It lists every match as `file:line`, asks you to confirm, and then comments each line out as `: # removed by ev: <original line>` (keeping the indentation). The leading `:` is a no-op command, so an `if`, `case` or function body whose only line this was stays valid shell. In fish files the line becomes a plain `# removed by ev: <original line>`. Without a terminal (scripts, CI), `ev delete KEY` stops before changing anything when `KEY` appears in these files or in an app's settings, unless you pass `--yes`.
 
 - The original file is saved once as `<file>.ev-bak` before the first edit.
 - Lines are not edited when they are not simple assignments: multiple assignments or inline prefixes (`FOO=1 cmd`, `export A=1 B=2`), appends to the variable itself (`PATH=$PATH:/x`), multi-line values, and compound lines with `;`, `&` or `|`. ev reports these; edit them by hand.
@@ -127,8 +127,8 @@ Any argument that starts with `-` is read as an option. Put `--` before it to en
 - **Windows:** the variables live in `HKCU\Environment` (the same place as the system's "Environment Variables" dialog), but your descriptions live in the `descriptions` file in `%APPDATA%\ev` (or `%EV_HOME%`), not in the registry.
 - **macOS / Linux:** `~/.config/ev/` (or `$XDG_CONFIG_HOME/ev`, or `$EV_HOME`) holds the variables and generated
   `env.sh` / `env.fish` files and the `descriptions` file. `ev init` adds one line that loads them to these startup files, depending on your shell:
-  - zsh: `${ZDOTDIR:-$HOME}/.zshenv`, so scripts and `zsh -c` see the variables too
-  - bash on Linux: `~/.bashrc` and `~/.profile`
+  - zsh: `${ZDOTDIR:-$HOME}/.zshenv` (so scripts and `zsh -c` see the variables too) and `${ZDOTDIR:-$HOME}/.zshrc` (so ev's value wins over definitions in `.zshrc` in interactive shells). When `ZDOTDIR` is set and differs from `$HOME`, `~/.zshenv` is hooked as well, because zsh reads it first and it may be what sets `ZDOTDIR`
+  - bash on Linux: `~/.bashrc` and `~/.profile`. If `~/.bash_profile` exists, login shells read it instead of `~/.profile`, so make it source `~/.bashrc`
   - bash on macOS: `~/.bash_profile` (or `~/.profile` if only that one exists)
   - fish: `conf.d/ev.fish`
   - other shells: `~/.profile`

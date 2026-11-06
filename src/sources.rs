@@ -41,6 +41,8 @@ struct Roots {
     system: PathBuf,
     /// ev's own config dir: its generated files are not user definitions
     skip: Option<PathBuf>,
+    /// A `ZDOTDIR` other than home: zsh reads its startup files from there
+    zdotdir: Option<PathBuf>,
     /// Running as root: only files outside `home` may be edited, so `sudo`
     /// never leaves root-owned files in the user's home.
     root: bool,
@@ -50,12 +52,21 @@ fn home_dir() -> Option<PathBuf> {
     env::var_os("HOME").filter(|h| !h.is_empty()).map(PathBuf::from)
 }
 
+/// `ZDOTDIR` when it is set, non-empty and not the home directory itself.
+pub fn custom_zdotdir(home: Option<&Path>) -> Option<PathBuf> {
+    env::var_os("ZDOTDIR")
+        .filter(|z| !z.is_empty())
+        .map(PathBuf::from)
+        .filter(|z| Some(z.as_path()) != home)
+}
+
 impl Roots {
     fn from_env() -> Self {
         Roots {
             home: home_dir(),
             system: env::var_os("EV_SYSTEM_ROOT").map_or_else(|| PathBuf::from("/"), PathBuf::from),
             skip: crate::store::config_dir().ok(),
+            zdotdir: custom_zdotdir(home_dir().as_deref()),
             root: running_as_root(),
         }
     }
@@ -67,6 +78,11 @@ impl Roots {
                 files.push(home.join(name));
             }
             files.extend(dir_files(&home.join(".config/fish/conf.d"), "fish"));
+        }
+        if let Some(zdotdir) = &self.zdotdir {
+            for name in ZSH_FILES {
+                files.push(zdotdir.join(name));
+            }
         }
         let etc = |name: &str| self.system.join("etc").join(name);
         files.push(etc("profile"));
@@ -88,6 +104,7 @@ const USER_FILES: [&str; 7] = [
     ".profile",
     ".config/fish/config.fish",
 ];
+const ZSH_FILES: [&str; 3] = [".zshenv", ".zprofile", ".zshrc"];
 const SYSTEM_FILES: [&str; 6] = ["zshenv", "zprofile", "zshrc", "bashrc", "bash.bashrc", "environment"];
 const HOOK_MARKER: &[u8] = b"# added by ev";
 const REMOVED: &[u8] = b"# removed by ev: ";
@@ -626,6 +643,7 @@ mod tests {
                 home: Some(self.home.clone()),
                 system: self.sys.clone(),
                 skip: Some(self.home.join(".config/ev")),
+                zdotdir: None,
                 root: false,
             }
         }
@@ -657,6 +675,19 @@ mod tests {
         fn scan(&self, key: &str) -> Vec<Hit> {
             scan_in(&self.roots(), key)
         }
+    }
+
+    #[test]
+    fn scans_zsh_files_under_zdotdir() {
+        let fx = Fx::new();
+        let zdot = fx.home.join("zdot");
+        fs::create_dir_all(&zdot).unwrap();
+        fs::write(zdot.join(".zshrc"), "export FOO=1\n").unwrap();
+        assert!(fx.scan("FOO").is_empty());
+        let roots = Roots { zdotdir: Some(zdot.clone()), ..fx.roots() };
+        let hits = scan_in(&roots, "FOO");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].file, zdot.join(".zshrc"));
     }
 
     #[test]

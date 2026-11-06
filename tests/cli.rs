@@ -172,7 +172,8 @@ fn init_adds_hook_once() {
     assert_eq!(rc, first);
     assert!(rc.starts_with("export KEEP=1\n"));
     assert_eq!(rc.matches("# added by ev").count(), 1);
-    assert!(!env.rc().exists(), "init must not touch .zshrc");
+    let zshrc = std::fs::read_to_string(env.rc()).unwrap();
+    assert_eq!(zshrc.matches("# added by ev").count(), 1);
     assert!(Path::new(&env.ev_home().join("env.sh")).exists());
     assert!(Path::new(&env.ev_home().join("env.fish")).exists());
 }
@@ -183,10 +184,60 @@ fn init_leaves_old_zshrc_hook_alone() {
     let old = "[ -f \"/old/env.sh\" ] && . \"/old/env.sh\"  # added by ev\n";
     std::fs::write(env.rc(), old).unwrap();
     env.ok(&["init"]);
-    assert_eq!(std::fs::read_to_string(env.rc()).unwrap(), old);
+    assert!(std::fs::read_to_string(env.rc()).unwrap().starts_with(old));
     assert!(std::fs::read_to_string(env.zshenv())
         .unwrap()
         .contains("# added by ev"));
+}
+
+#[test]
+fn zshrc_definition_after_hook_warns() {
+    let env = Env::new();
+    env.ok(&["init"]);
+    let mut rc = std::fs::read_to_string(env.rc()).unwrap();
+    rc.push_str("export FOO=2\n");
+    std::fs::write(env.rc(), rc).unwrap();
+    let out = env.run(&["set", "FOO", "3"]);
+    assert!(out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains(".zshrc:"), "{stderr}");
+}
+
+fn run_with_zdotdir(env: &Env, zdotdir: &str, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_ev"))
+        .args(args)
+        .env_clear()
+        .env("EV_HOME", env.ev_home())
+        .env("HOME", env.root.path())
+        .env("ZDOTDIR", zdotdir)
+        .env("SHELL", "/bin/zsh")
+        .env("EV_SYSTEM_ROOT", env.root.path().join("sys"))
+        .stdin(Stdio::null())
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn init_hooks_home_and_zdotdir_when_they_differ() {
+    let env = Env::new();
+    let zdot = env.root.path().join("zdot");
+    std::fs::create_dir_all(&zdot).unwrap();
+    let out = run_with_zdotdir(&env, zdot.to_str().unwrap(), &["init"]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    for file in [env.zshenv(), zdot.join(".zshenv"), zdot.join(".zshrc")] {
+        let text = std::fs::read_to_string(&file).unwrap();
+        assert_eq!(text.matches("# added by ev").count(), 1, "{}", file.display());
+    }
+    assert!(!env.rc().exists());
+}
+
+#[test]
+fn empty_zdotdir_is_treated_as_unset() {
+    let env = Env::new();
+    let out = run_with_zdotdir(&env, "", &["init"]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(std::fs::read_to_string(env.zshenv()).unwrap().contains("# added by ev"));
+    assert!(std::fs::read_to_string(env.rc()).unwrap().contains("# added by ev"));
 }
 
 #[test]
