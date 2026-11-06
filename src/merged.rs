@@ -19,6 +19,8 @@ pub struct Row {
     pub name: String,
     pub value: String,
     pub source: String,
+    /// A pending `unset` marker: the name is listed, but has no value.
+    pub deleted: bool,
 }
 
 /// Rows keyed by folded name, so Windows treats `Path` and `PATH` as one.
@@ -41,6 +43,7 @@ impl Merged {
                 name: name.clone(),
                 value,
                 source: source.to_string(),
+                deleted: false,
             };
             self.0.insert(fold(&name), row);
         }
@@ -62,6 +65,19 @@ impl Merged {
     fn hide(&mut self, names: &BTreeSet<String>) {
         for name in names {
             self.0.remove(&fold(name));
+        }
+    }
+
+    /// List `names` as deleted markers: empty value, no live variable.
+    fn mark_deleted(&mut self, names: &BTreeSet<String>) {
+        for name in names {
+            let row = Row {
+                name: name.clone(),
+                value: String::new(),
+                source: format!("{EV_STORE} (deleted)"),
+                deleted: true,
+            };
+            self.0.entry(fold(name)).or_insert(row);
         }
     }
 
@@ -107,9 +123,15 @@ fn keeps_process_value(name: &str, merged: &Merged, windows: bool) -> bool {
 
 /// Only what ev itself manages (`ev list --ev`).
 pub fn ev_only() -> Result<Merged> {
+    Ok(ev_layer(store::list()?, &store::deleted()?))
+}
+
+/// ev's values plus its pending-delete markers (rows with `deleted` set).
+fn ev_layer(vars: BTreeMap<String, String>, deleted: &BTreeSet<String>) -> Merged {
     let mut merged = Merged::default();
-    merged.overlay(store::list()?, EV_STORE);
-    Ok(merged)
+    merged.overlay(vars, EV_STORE);
+    merged.mark_deleted(deleted);
+    merged
 }
 
 /// The process environment, labelled and overridden by ev's store.
@@ -245,6 +267,24 @@ mod tests {
         assert!(!keeps_process_value("FOO", &merged, true));
         // no process PATH: the store value is all there is
         assert!(!keeps_process_value("Path", &Merged::default(), true));
+    }
+
+    #[test]
+    fn ev_layer_lists_deleted_markers_with_empty_value() {
+        let deleted: BTreeSet<String> = ["GONE".to_string(), "A".to_string()].into();
+        let merged = ev_layer(map(&[("A", "1")]), &deleted);
+        let got: Vec<_> = merged
+            .into_rows()
+            .into_iter()
+            .map(|r| (r.name, r.value, r.source, r.deleted))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("A".to_string(), "1".to_string(), EV_STORE.to_string(), false),
+                ("GONE".to_string(), String::new(), format!("{EV_STORE} (deleted)"), true),
+            ]
+        );
     }
 
     #[test]

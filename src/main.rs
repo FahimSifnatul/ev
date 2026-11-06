@@ -176,7 +176,8 @@ fn print_value(key: &str, value: &str) {
 fn print_list(vars: merged::Merged) {
     let vars = vars.into_rows();
     if !io::stdout().is_terminal() {
-        for row in vars {
+        // a deleted marker has no value; `NAME=` would look like a set variable
+        for row in vars.into_iter().filter(|row| !row.deleted) {
             println!("{}={}", row.name, row.value);
         }
         return;

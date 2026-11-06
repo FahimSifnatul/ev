@@ -104,6 +104,15 @@ fn delete_records_marker() {
 }
 
 #[test]
+fn piped_list_ev_omits_deleted_markers() {
+    let env = Env::new();
+    env.ok(&["set", "KEEP", "1"]);
+    env.ok(&["set", "FOO", "bar"]);
+    env.ok(&["delete", "FOO"]);
+    assert_eq!(env.ok(&["list", "--ev"]), "KEEP=1\n");
+}
+
+#[test]
 fn rm_alias_deletes() {
     let env = Env::new();
     env.ok(&["add", "FOO", "1"]);
