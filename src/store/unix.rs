@@ -95,35 +95,38 @@ pub(crate) fn config_dir() -> Result<PathBuf> {
     }
 }
 
-/// The shell startup file that should load ev's generated env file.
-fn rc_file() -> Result<(PathBuf, bool)> {
+/// Every startup file that should load ev's generated env file for the
+/// current shell, with whether it is fish syntax.
+fn rc_files() -> Result<Vec<(PathBuf, bool)>> {
     let shell = env::var("SHELL").unwrap_or_default();
     let home = home()?;
-    let rc = match shell.rsplit('/').next().unwrap_or_default() {
-        "zsh" => (
+    let files = match shell.rsplit('/').next().unwrap_or_default() {
+        // .zshenv is read by every zsh invocation
+        "zsh" => vec![(
             env::var_os("ZDOTDIR")
                 .map_or(home, PathBuf::from)
-                .join(".zshrc"),
+                .join(".zshenv"),
             false,
-        ),
+        )],
         "bash" if cfg!(target_os = "macos") => {
             // Terminal.app starts login shells, which do not read .bashrc
             let profile = home.join(".profile");
             let bash_profile = home.join(".bash_profile");
-            (
+            vec![(
                 if bash_profile.exists() || !profile.exists() {
                     bash_profile
                 } else {
                     profile
                 },
                 false,
-            )
+            )]
         }
-        "bash" => (home.join(".bashrc"), false),
-        "fish" => (xdg_config()?.join("fish/conf.d/ev.fish"), true),
-        _ => (home.join(".profile"), false),
+        // .bashrc covers interactive shells, .profile login shells
+        "bash" => vec![(home.join(".bashrc"), false), (home.join(".profile"), false)],
+        "fish" => vec![(xdg_config()?.join("fish/conf.d/ev.fish"), true)],
+        _ => vec![(home.join(".profile"), false)],
     };
-    Ok(rc)
+    Ok(files)
 }
 
 fn hook_line(dir: &Path, fish: bool) -> String {
@@ -174,10 +177,9 @@ fn write_all(dir: &Path, entries: &[Entry]) -> Result<()> {
     write_atomic(&dir.join("vars"), &serialize(entries))
 }
 
-fn change(new: Entry) -> Result<()> {
-    let dir = config_dir()?;
-    fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
-    // exclusive lock for the whole read-modify-write; released on drop
+/// Takes the exclusive store lock; it is released when the file is dropped.
+fn lock_store(dir: &Path) -> Result<fs::File> {
+    fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     let lock = fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -187,6 +189,12 @@ fn change(new: Entry) -> Result<()> {
         .open(dir.join("lock"))
         .context("opening lock file")?;
     lock.lock().context("locking store")?;
+    Ok(lock)
+}
+
+fn change(new: Entry) -> Result<()> {
+    let dir = config_dir()?;
+    let lock = lock_store(&dir)?;
     write_all(&dir, &replace(read_entries(&dir)?, new))?;
     drop(lock);
     // the hint is advisory: a failed check must not fail a saved change
@@ -196,16 +204,23 @@ fn change(new: Entry) -> Result<()> {
     Ok(())
 }
 
-fn hook_installed(dir: &Path) -> Result<bool> {
-    let (rc, fish) = rc_file()?;
-    match fs::read(&rc) {
+fn has_hook(rc: &Path, line: &str) -> Result<bool> {
+    match fs::read(rc) {
         // lossy: the rc may hold non-UTF-8 bytes we must not choke on
-        Ok(bytes) => Ok(String::from_utf8_lossy(&bytes)
-            .lines()
-            .any(|l| l == hook_line(dir, fish))),
+        Ok(bytes) => Ok(String::from_utf8_lossy(&bytes).lines().any(|l| l == line)),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
         Err(err) => Err(err).with_context(|| format!("reading {}", rc.display())),
     }
+}
+
+/// True only when every target file already has the hook.
+fn hook_installed(dir: &Path) -> Result<bool> {
+    for (rc, fish) in rc_files()? {
+        if !has_hook(&rc, &hook_line(dir, fish))? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 pub fn list() -> Result<BTreeMap<String, String>> {
@@ -239,28 +254,31 @@ pub fn delete(key: &str) -> Result<()> {
 
 pub fn init() -> Result<()> {
     let dir = config_dir()?;
+    let lock = lock_store(&dir)?;
     let entries = read_entries(&dir)?;
     write_all(&dir, &entries)?;
+    drop(lock);
 
-    let (rc, fish) = rc_file()?;
-    if hook_installed(&dir)? {
-        println!("{} already loads ev", rc.display());
-        return Ok(());
+    for (rc, fish) in rc_files()? {
+        let line = hook_line(&dir, fish);
+        if has_hook(&rc, &line)? {
+            println!("{} already loads ev", rc.display());
+            continue;
+        }
+        if let Some(parent) = rc.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&rc)
+            .with_context(|| format!("opening {}", rc.display()))?;
+        write!(file, "\n{line}\n").with_context(|| format!("writing {}", rc.display()))?;
+        println!(
+            "Added ev to {}. Open a new terminal to load it.",
+            rc.display()
+        );
     }
-    if let Some(parent) = rc.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&rc)
-        .with_context(|| format!("opening {}", rc.display()))?;
-    write!(file, "\n{}\n", hook_line(&dir, fish))
-        .with_context(|| format!("writing {}", rc.display()))?;
-    println!(
-        "Added ev to {}. Open a new terminal to load it.",
-        rc.display()
-    );
     Ok(())
 }
 

@@ -20,6 +20,10 @@ impl Env {
         self.root.path().join("ev")
     }
 
+    fn zshenv(&self) -> std::path::PathBuf {
+        self.root.path().join(".zshenv")
+    }
+
     fn rc(&self) -> std::path::PathBuf {
         self.root.path().join(".zshrc")
     }
@@ -151,14 +155,64 @@ fn env_sh_can_be_sourced() {
 #[test]
 fn init_adds_hook_once() {
     let env = Env::new();
-    std::fs::write(env.rc(), "export KEEP=1\n").unwrap();
+    std::fs::write(env.zshenv(), "export KEEP=1\n").unwrap();
     env.ok(&["init"]);
+    let first = std::fs::read_to_string(env.zshenv()).unwrap();
     env.ok(&["init"]);
-    let rc = std::fs::read_to_string(env.rc()).unwrap();
+    let rc = std::fs::read_to_string(env.zshenv()).unwrap();
+    assert_eq!(rc, first);
     assert!(rc.starts_with("export KEEP=1\n"));
     assert_eq!(rc.matches("# added by ev").count(), 1);
+    assert!(!env.rc().exists(), "init must not touch .zshrc");
     assert!(Path::new(&env.ev_home().join("env.sh")).exists());
     assert!(Path::new(&env.ev_home().join("env.fish")).exists());
+}
+
+#[test]
+fn init_leaves_old_zshrc_hook_alone() {
+    let env = Env::new();
+    let old = "[ -f \"/old/env.sh\" ] && . \"/old/env.sh\"  # added by ev\n";
+    std::fs::write(env.rc(), old).unwrap();
+    env.ok(&["init"]);
+    assert_eq!(std::fs::read_to_string(env.rc()).unwrap(), old);
+    assert!(std::fs::read_to_string(env.zshenv())
+        .unwrap()
+        .contains("# added by ev"));
+}
+
+#[test]
+fn init_hooks_every_bash_file() {
+    let env = Env::new();
+    let bash = |args: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_ev"))
+            .args(args)
+            .env_clear()
+            .env("EV_HOME", env.ev_home())
+            .env("HOME", env.root.path())
+            .env("SHELL", "/bin/bash")
+            .env("EV_SYSTEM_ROOT", env.root.path().join("sys"))
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    };
+    bash(&["init"]);
+    let files: &[&str] = if cfg!(target_os = "macos") {
+        &[".bash_profile"]
+    } else {
+        &[".bashrc", ".profile"]
+    };
+    let mut seen = Vec::new();
+    for name in files {
+        let text = std::fs::read_to_string(env.root.path().join(name)).unwrap();
+        assert_eq!(text.matches("# added by ev").count(), 1, "{name}");
+        seen.push(text);
+    }
+    bash(&["init"]);
+    for (name, before) in files.iter().zip(&seen) {
+        let after = std::fs::read_to_string(env.root.path().join(name)).unwrap();
+        assert_eq!(&after, before, "{name} changed on second init");
+    }
 }
 
 #[test]
@@ -176,9 +230,9 @@ fn set_hints_until_init() {
 fn init_keeps_non_utf8_rc_bytes() {
     let env = Env::new();
     let original = b"export X=\xff\xfe\n";
-    std::fs::write(env.rc(), original).unwrap();
+    std::fs::write(env.zshenv(), original).unwrap();
     env.ok(&["init"]);
-    let rc = std::fs::read(env.rc()).unwrap();
+    let rc = std::fs::read(env.zshenv()).unwrap();
     assert!(rc.starts_with(original));
     assert!(String::from_utf8_lossy(&rc).contains("# added by ev"));
 }
@@ -659,12 +713,14 @@ fn parallel_sets_do_not_lose_updates() {
                 .env("SHELL", "/bin/zsh")
                 .env("EV_SYSTEM_ROOT", env.root.path().join("sys"))
                 .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
                 .spawn()
                 .unwrap()
         })
         .collect();
     for mut child in children {
-        assert!(child.wait().unwrap().success());
+        assert!(child.wait().unwrap().success(), "parallel ev set failed");
     }
     let listed = env.ok(&["list", "--ev"]);
     for i in 0..20 {
