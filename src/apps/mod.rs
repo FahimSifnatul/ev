@@ -20,6 +20,8 @@ pub trait App {
     fn unset(&self, key: &str) -> Result<()>;
     /// Forget the variable so the tool falls back to its default.
     fn delete(&self, key: &str) -> Result<()>;
+    /// The command `delete` runs, shown before asking to confirm.
+    fn delete_command(&self, key: &str) -> String;
 }
 
 pub fn all() -> Vec<Box<dyn App>> {

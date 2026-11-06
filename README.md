@@ -1,12 +1,12 @@
 # ev
 
-Set permanent, user-level environment variables from one command, on macOS, Linux and Windows.
+Set and remove permanent environment variables from one command, on macOS, Linux and Windows. ev keeps your variables in its own user-level store; `ev delete` also cleans up definitions in shell startup files (including system files such as `/etc/profile`) and app settings such as Go's.
 
 ```
 ev set API_KEY abc123
 ```
 
-No more editing `~/.zshrc`, or digging through the Windows environment dialog.
+No more editing `~/.zshrc` by hand, or digging through the Windows environment dialog.
 
 ## Install
 
@@ -36,7 +36,7 @@ ev list --ev                       # only the variables ev manages
 ev set API_URL x -d "staging API"  # attach a description (--desc)
 ev unset EDITOR                    # keep it, but make the value empty
 ev delete EDITOR                   # remove it completely, including its description (alias: rm)
-ev set LD_PRELOAD x --yes          # skip the confirmation for critical variables (-y)
+ev set LD_PRELOAD x --yes          # answer yes to confirmations (-y), see below
 ```
 
 `unset` and `delete` are different: `unset` keeps the variable (with an empty value) and its description, while `delete` removes the variable, its description, and its definitions in shell startup files (see below). `ev unset` does not alias `delete`.
@@ -57,11 +57,14 @@ Changes apply to **new terminals**. Terminals that are already open keep their o
 
 ### Deleting from shell startup files (macOS / Linux)
 
-`ev delete KEY` also looks for definitions of `KEY` in your shell startup files (`~/.zshenv`, `~/.zprofile`, `~/.zshrc`, `~/.bashrc`, `~/.bash_profile`, `~/.profile`, fish's `config.fish` and `conf.d/*.fish`) and in the system files (`/etc/profile`, `/etc/profile.d/*.sh`, `/etc/zshenv`, `/etc/zprofile`, `/etc/zshrc`, `/etc/bashrc`, `/etc/bash.bashrc`, `/etc/environment`). It lists every match as `file:line`, asks you to confirm, and then comments each line out as `# removed by ev: <original line>`. Indented lines are kept valid shell by writing `: # removed by ev: ...` instead.
+`ev delete KEY` also looks for definitions of `KEY` in your shell startup files (`~/.zshenv`, `~/.zprofile`, `~/.zshrc`, `~/.bashrc`, `~/.bash_profile`, `~/.profile`, fish's `config.fish` and `conf.d/*.fish`) and in the system files (`/etc/profile`, `/etc/profile.d/*.sh`, `/etc/zshenv`, `/etc/zprofile`, `/etc/zshrc`, `/etc/bashrc`, `/etc/bash.bashrc`, `/etc/environment`). It lists every match as `file:line`, asks you to confirm, and then comments each line out as `: # removed by ev: <original line>` (keeping the indentation). The leading `:` is a no-op command, so an `if`, `case` or function body whose only line this was stays valid shell. In fish files the line becomes a plain `# removed by ev: <original line>`. Without a terminal (scripts, CI), `ev delete KEY` stops before changing anything when `KEY` appears in these files or in an app's settings, unless you pass `--yes`.
 
 - The original file is saved once as `<file>.ev-bak` before the first edit.
 - Lines are not edited when they are not simple assignments: multiple assignments or inline prefixes (`FOO=1 cmd`, `export A=1 B=2`), appends to the variable itself (`PATH=$PATH:/x`), multi-line values, and compound lines with `;`, `&` or `|`. ev reports these; edit them by hand.
-- ev never runs itself with elevated rights. System files that it cannot write are skipped with a message suggesting `sudo ev delete KEY`. Note that `sudo` runs ev as root, which uses root's home directory, so for your own files edit them by hand instead.
+- Lines inside a heredoc body (`<<EOF ... EOF`) or inside a multi-line quoted string are text, not definitions, and are ignored.
+- `/etc/environment` is not a shell script (it is read by `pam_env`), so matches there are only reported; edit that file by hand.
+- ev never runs itself with elevated rights. System files (outside your home directory) that it cannot write are skipped with a message suggesting `sudo ev delete KEY --yes`.
+- Under `sudo` (root running in your home directory, as on macOS where `sudo` keeps `HOME`), `ev delete` edits only files outside your home directory. It leaves ev's own store, your descriptions, your own startup files and app settings alone, so none of them become owned by root; run `ev delete KEY` without `sudo` for those.
 - Even when a startup file cannot be edited, `delete` still hides the variable from new shells through ev's own file.
 
 `ev delete` also removes the variable from any app that has it set (see below).
@@ -77,9 +80,9 @@ ev delete GOOS --app go            # go env -u GOOS
 ev get GOOS --app go
 ```
 
-- `ev list` shows Go settings with `SOURCE` `go`. Listing needs Go 1.21 or newer; if `go` is not on your PATH, its settings are left out of the list.
+- `ev list` shows Go settings with `SOURCE` `go`: only the variables in Go's own settings file (the one `go env GOENV` names). A `GOPATH` exported in `~/.zshrc` is not a Go setting, and `ev delete GOPATH --app go` says there is nothing to do for it. If `go` is not on your PATH, its settings are left out of the list.
+- `ev delete KEY` (without `--app`) shows the `go env -u KEY` it will run next to the startup file lines, and asks once for all of them.
 - `--desc` cannot be combined with `--app`.
-- A value that starts with `-` must follow `--`, for example `ev set KEY -- -value`.
 - App changes apply right away to new `go` commands; they do not need a new terminal.
 
 ## Descriptions
@@ -100,12 +103,16 @@ Changing some variables can break your shell or system, so `ev` warns and asks f
 - Windows: `USERPROFILE`, `SYSTEMROOT`, `WINDIR`, `COMSPEC`, `PATHEXT`, `PSMODULEPATH`, `APPDATA`, `LOCALAPPDATA`, `TEMP`, `TMP`, `PROGRAMFILES`
 - anything starting with `LD_` or `DYLD_` (dynamic linker)
 
-Pass `--yes` to skip the prompt (required when stdin is not a terminal, such as in scripts).
+Pass `--yes` (`-y`) to answer yes to every confirmation: for critical variables, and for `ev delete` editing shell startup files, system files and app settings. Without a terminal (such as in scripts), ev stops instead of asking, so `--yes` is required there whenever there is something to confirm.
+
+## Values that start with `-`
+
+Any argument that starts with `-` is read as an option. Put `--` before it to end the options; everything after `--` is taken literally, so options go before it: `ev set KEY -- -value`, `ev set --app go GOFLAGS -- -mod=mod`.
 
 ## Windows notes
 
 - Values are stored in `HKCU\Environment`. `ev unset` stores an empty value; many programs treat an empty variable as undefined, which is usually what "unset" means, but a few may still see it as set.
-- `ev delete` removes the user value. If the variable is also defined machine-wide (in `HKLM`), it is deleted only from an elevated (administrator) prompt; otherwise ev stops with "run as administrator".
+- `ev delete` removes the user value. If the variable is also defined machine-wide (in `HKLM`), ev deletes that too when run from an elevated (administrator) prompt; otherwise it stops with an error saying the variable is still defined machine-wide and needs "run as administrator".
 - Only the user store is written. Machine-wide values are read (`SOURCE` `system`) but not changed except by `delete` when elevated.
 - Shell startup files are not scanned on Windows.
 

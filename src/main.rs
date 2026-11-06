@@ -15,9 +15,15 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "ev", version, about = "Manage permanent user-level environment variables")]
+#[command(
+    name = "ev",
+    version,
+    about = "Manage permanent environment variables: ev's own user store, app settings, and their definitions in shell startup files"
+)]
 struct Cli {
-    /// Skip the confirmation prompt for critical variables
+    /// Answer yes to every confirmation: changing critical variables, and
+    /// letting `delete` edit shell startup and system files and app settings.
+    /// Needed when stdin is not a terminal and there is something to confirm
     #[arg(short, long, global = true)]
     yes: bool,
 
@@ -125,26 +131,19 @@ fn run(cli: Cli) -> Result<()> {
             if let Some(name) = &app {
                 let app = apps::find(name)?;
                 guard(&key, cli.yes)?;
+                if !app.list()?.contains_key(&key) {
+                    println!(
+                        "Nothing to do: {key} is not set in {0}'s own settings (it may come from \
+                         your environment or shell startup files; see 'ev delete {key}').",
+                        app.name()
+                    );
+                    return Ok(());
+                }
                 app.delete(&key)?;
                 return app_done(app.name());
             }
             guard(&key, cli.yes)?;
-            #[cfg(unix)]
-            let rc_hits = confirm_rc_edits(&key, cli.yes)?;
-            let holders = app_holders(&key);
-            store::delete(&key)?;
-            #[cfg(unix)]
-            comment_out_rc_lines(&rc_hits);
-            for app in holders {
-                match app.delete(&key) {
-                    Ok(()) => println!("Removed {key} from {}", app.name()),
-                    Err(err) => eprintln!("ev: warning: {}: {err:#}", app.name()),
-                }
-            }
-            if let Err(err) = notes::remove(&key) {
-                eprintln!("ev: warning: {err:#}");
-            }
-            done();
+            delete_everywhere(&key, cli.yes)?;
         }
         Command::Get { key, app: Some(name) } => match apps::find(&name)?.get(&key)? {
             Some(value) => print_value(&key, &value),
@@ -229,27 +228,77 @@ fn guard(key: &str, yes: bool) -> Result<()> {
     }
 }
 
-/// Show where shell startup files also define `key` and ask before editing them.
-#[cfg(unix)]
-fn confirm_rc_edits(key: &str, yes: bool) -> Result<Vec<sources::Hit>> {
-    let hits = sources::scan(key);
-    if hits.is_empty() {
-        return Ok(hits);
+/// `ev delete KEY` without `--app`: ev's store, shell startup files, apps
+/// that hold the variable, and its description. Under `sudo` (root in the
+/// user's home) only files outside that home are touched.
+fn delete_everywhere(key: &str, yes: bool) -> Result<()> {
+    #[cfg(unix)]
+    let as_root = sources::running_as_root();
+    #[cfg(not(unix))]
+    let as_root = false;
+    #[cfg(unix)]
+    let rc_hits = sources::scan(key);
+    let holders = if as_root { Vec::new() } else { app_holders(key) };
+
+    #[cfg(unix)]
+    let rc_editable = show_rc_hits(key, &rc_hits);
+    #[cfg(not(unix))]
+    let rc_editable = false;
+    for app in &holders {
+        eprintln!("{key} is also set in {0}'s settings:\n  {0}: {1}", app.name(), app.delete_command(key));
     }
-    eprintln!("{key} is also defined in your shell startup files:");
-    for hit in &hits {
-        eprintln!("  {}:{}: {}", hit.file.display(), hit.line_no, hit.text);
-    }
-    if hits.iter().any(|h| h.editable) {
-        eprintln!("ev will comment these lines out (originals are kept in <file>.ev-bak).");
+    if rc_editable || !holders.is_empty() {
+        eprintln!("ev will make these changes.");
+        // one question for all of them, before anything changes
         confirm(yes)?;
     }
-    Ok(hits)
+
+    if !as_root {
+        store::delete(key)?;
+    }
+    #[cfg(unix)]
+    comment_out_rc_lines(key, &rc_hits);
+    for app in holders {
+        match app.delete(key) {
+            Ok(()) => println!("Removed {key} from {}", app.name()),
+            Err(err) => eprintln!("ev: warning: {}: {err:#}", app.name()),
+        }
+    }
+    if as_root {
+        eprintln!(
+            "ev: running as root: only files outside your home directory were changed. \
+             Run 'ev delete {key}' without sudo for ev's own store, your startup files and apps."
+        );
+        done();
+        return Ok(());
+    }
+    if let Err(err) = notes::remove(key) {
+        eprintln!("ev: warning: {err:#}");
+    }
+    done();
+    Ok(())
 }
 
-/// The `-KEY` marker already hides the variable, so problems here only warn.
+/// List where shell startup files also define `key`; true when ev would edit one.
 #[cfg(unix)]
-fn comment_out_rc_lines(hits: &[sources::Hit]) {
+fn show_rc_hits(key: &str, hits: &[sources::Hit]) -> bool {
+    if hits.is_empty() {
+        return false;
+    }
+    eprintln!("{key} is also defined in shell startup files:");
+    for hit in hits {
+        eprintln!("  {}:{}: {}", hit.file.display(), hit.line_no, hit.text);
+    }
+    let editable = hits.iter().any(|h| h.editable);
+    if editable {
+        eprintln!("ev will comment the simple ones out (originals are kept in <file>.ev-bak).");
+    }
+    editable
+}
+
+/// ev's own delete marker already hides the variable, so problems here only warn.
+#[cfg(unix)]
+fn comment_out_rc_lines(key: &str, hits: &[sources::Hit]) {
     if hits.is_empty() {
         return;
     }
@@ -265,17 +314,19 @@ fn comment_out_rc_lines(hits: &[sources::Hit]) {
     }
     for hit in &report.left {
         eprintln!(
-            "ev: left {}:{} as is (it appends to itself or spans several lines); edit it by hand",
+            "ev: left {}:{} as is ({}); edit it by hand",
             hit.file.display(),
-            hit.line_no
+            hit.line_no,
+            hit.why
         );
     }
     for skipped in &report.skipped {
-        eprintln!(
-            "ev: could not edit {}: {}. For system files run 'sudo ev delete <KEY>'.",
-            skipped.file.display(),
-            skipped.reason
-        );
+        let hint = if sources::is_system_file(&skipped.file) && !sources::euid_is_root() {
+            format!(" To edit it, run 'sudo ev delete {key} --yes'.")
+        } else {
+            String::new()
+        };
+        eprintln!("ev: could not edit {}: {}.{hint}", skipped.file.display(), skipped.reason);
     }
 }
 

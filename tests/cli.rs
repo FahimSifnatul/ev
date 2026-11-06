@@ -286,7 +286,7 @@ fn delete_comments_out_rc_line() {
     assert!(out.contains("Done"), "{out}");
     assert_eq!(
         std::fs::read_to_string(&rc).unwrap(),
-        "# removed by ev: export FOO=old\nexport KEEP=1\n"
+        ": # removed by ev: export FOO=old\nexport KEEP=1\n"
     );
     assert_eq!(
         std::fs::read_to_string(env.root.path().join(".zshrc.ev-bak")).unwrap(),
@@ -440,6 +440,23 @@ impl Env {
             .unwrap()
     }
 
+    fn run_go_with(&self, args: &[&str], name: &str, value: &str) -> Output {
+        Command::new(env!("CARGO_BIN_EXE_ev"))
+            .args(args)
+            .env_clear()
+            .env("EV_HOME", self.ev_home())
+            .env("HOME", self.root.path())
+            .env("ZDOTDIR", self.root.path())
+            .env("SHELL", "/bin/zsh")
+            .env("EV_SYSTEM_ROOT", self.root.path().join("sys"))
+            .env("PATH", std::env::var_os("PATH").unwrap())
+            .env("GOENV", self.root.path().join("goenv"))
+            .env(name, value)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap()
+    }
+
     fn ok_go(&self, args: &[&str]) -> String {
         let out = self.run_go(args);
         assert!(
@@ -497,7 +514,7 @@ fn delete_without_app_also_clears_go_var() {
     }
     let env = Env::new();
     env.ok_go(&["set", "GOPROXY", "direct", "--app", "go"]);
-    env.ok_go(&["delete", "GOPROXY"]);
+    env.ok_go(&["--yes", "delete", "GOPROXY"]);
     assert_ne!(env.ok_go(&["get", "GOPROXY", "--app", "go"]), "direct\n");
     assert_eq!(env.read("vars"), "-GOPROXY\n");
 }
@@ -541,4 +558,89 @@ fn unavailable_app_is_rejected() {
     }
     // the merged list just skips it
     env.ok(&["list"]);
+}
+
+#[test]
+fn delete_with_go_holder_needs_yes_without_terminal() {
+    if !go_installed() {
+        return;
+    }
+    let env = Env::new();
+    env.ok_go(&["set", "GOPROXY", "direct", "--app", "go"]);
+    let out = env.run_go(&["delete", "GOPROXY"]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("go env -u GOPROXY"), "{stderr}");
+    // nothing changed
+    assert_eq!(env.read("vars"), "");
+    assert_eq!(env.ok_go(&["get", "GOPROXY", "--app", "go"]), "direct\n");
+}
+
+#[test]
+fn os_environment_values_are_not_go_settings() {
+    if !go_installed() {
+        return;
+    }
+    let env = Env::new();
+    std::fs::write(env.rc(), "export GOPATH=/from/rc\n").unwrap();
+    let out = env.run_go_with(&["list"], "GOPATH", "/from/rc");
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(text.lines().any(|l| l == "GOPATH=/from/rc"), "{text}");
+    // not go's: --app go has nothing to remove and says so
+    let out = env.run_go_with(&["delete", "GOPATH", "--app", "go"], "GOPATH", "/from/rc");
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("Nothing to do"), "{stdout}");
+    assert!(!stdout.contains("Done"), "{stdout}");
+    // and plain delete does not offer go as a holder
+    let out = env.run_go_with(&["--yes", "delete", "GOPATH"], "GOPATH", "/from/rc");
+    assert!(out.status.success());
+    assert!(!String::from_utf8_lossy(&out.stderr).contains("go env -u"));
+}
+
+#[test]
+fn sudo_hint_names_the_key_and_only_for_system_files() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = Env::new();
+    // system files must live outside HOME
+    let sys = TempDir::new().unwrap();
+    let etc = sys.path().join("etc");
+    std::fs::create_dir_all(&etc).unwrap();
+    let profile = etc.join("profile");
+    std::fs::write(&profile, "export MYKEY=1\n").unwrap();
+    std::fs::set_permissions(&profile, std::fs::Permissions::from_mode(0o444)).unwrap();
+    let rc = env.root.path().join(".zshenv");
+    std::fs::write(&rc, "export MYKEY=2\n").unwrap();
+    std::fs::set_permissions(&rc, std::fs::Permissions::from_mode(0o444)).unwrap();
+    if std::fs::OpenOptions::new().write(true).open(&rc).is_ok() {
+        return; // running as root: permissions do not apply
+    }
+    let out = Command::new(env!("CARGO_BIN_EXE_ev"))
+        .args(["--yes", "delete", "MYKEY"])
+        .env_clear()
+        .env("EV_HOME", env.ev_home())
+        .env("HOME", env.root.path())
+        .env("SHELL", "/bin/zsh")
+        .env("EV_SYSTEM_ROOT", sys.path())
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let lines: Vec<&str> = stderr.lines().filter(|l| l.contains("could not edit")).collect();
+    assert_eq!(lines.len(), 2, "{stderr}");
+    let sys_line = lines.iter().find(|l| l.contains("etc/profile")).unwrap();
+    assert!(sys_line.contains("sudo ev delete MYKEY --yes"), "{stderr}");
+    let user_line = lines.iter().find(|l| l.contains(".zshenv")).unwrap();
+    assert!(!user_line.contains("sudo"), "{stderr}");
+}
+
+#[test]
+fn heredoc_lines_are_not_rc_hits() {
+    let env = Env::new();
+    let original = "cat <<EOF > /tmp/never\nexport FOO=doc\nEOF\n";
+    std::fs::write(env.rc(), original).unwrap();
+    // no rc hit, so no confirmation is needed even without --yes
+    env.ok(&["delete", "FOO"]);
+    assert_eq!(std::fs::read_to_string(env.rc()).unwrap(), original);
 }
