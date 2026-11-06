@@ -34,6 +34,7 @@ ev get EDITOR                      # print one value
 ev list                            # print everything visible to the CLI, with where each value comes from
 ev list --ev                       # only the variables ev manages
 ev set API_URL x -d "staging API"  # attach a description (--desc)
+ev set TEMP_DIR '%LOCALAPPDATA%\tmp' --expand  # Windows: store as expandable (see below)
 ev unset EDITOR                    # keep it, but make the value empty
 ev delete EDITOR                   # remove it completely, including its description (alias: rm)
 ev set LD_PRELOAD x --yes          # answer yes to confirmations (-y), see below
@@ -42,6 +43,8 @@ ev set LD_PRELOAD x --yes          # answer yes to confirmations (-y), see below
 `unset` and `delete` are different: `unset` keeps the variable (with an empty value) and its description, while `delete` removes the variable, its description, and its definitions in shell startup files (see below). `ev unset` does not alias `delete`.
 
 Changes apply to **new terminals**. Terminals that are already open keep their old environment.
+
+On macOS/Linux, if a shell startup file defines the same variable after ev's hook line, `ev set` warns on stderr: that value wins in new shells. This check is best effort and only looks at the startup files for your `$SHELL`.
 
 ### Listing and sources
 
@@ -54,6 +57,8 @@ Changes apply to **new terminals**. Terminals that are already open keep their o
 - `user` / `system`: defined in the Windows user or machine registry
 
 `ev get` uses the same merged view. Piped output is still `NAME=value`, so scripts keep working.
+
+In a terminal, `ev list --ev` also shows names with a pending `ev delete` as rows with an empty `VALUE` and `SOURCE` `ev (deleted)`. A deleted name is also `unset` in new shells, so a variable inherited from the parent process can disappear there. Piped output leaves these rows out.
 
 ### Deleting from shell startup files (macOS / Linux)
 
@@ -112,6 +117,7 @@ Any argument that starts with `-` is read as an option. Put `--` before it to en
 ## Windows notes
 
 - Values are stored in `HKCU\Environment`. `ev unset` stores an empty value; many programs treat an empty variable as undefined, which is usually what "unset" means, but a few may still see it as set.
+- By default a value is stored literally (`REG_SZ`), so a `%` in it stays a `%`. `--expand` stores it as an expandable string (`REG_EXPAND_SZ`), so `%NAME%` references are expanded when read. `PATH` is always expandable. `--expand` must be repeated on each overwrite: a plain `ev set` stores a literal value again. It cannot be used with `--app`, and it is rejected on macOS/Linux.
 - `ev delete` removes the user value. If the variable is also defined machine-wide (in `HKLM`), ev deletes that too when run from an elevated (administrator) prompt; otherwise it stops with an error saying the variable is still defined machine-wide and needs "run as administrator".
 - Only the user store is written. Machine-wide values are read (`SOURCE` `system`) but not changed except by `delete` when elevated.
 - Shell startup files are not scanned on Windows.
@@ -120,8 +126,20 @@ Any argument that starts with `-` is read as an option. Put `--` before it to en
 
 - **Windows:** the variables live in `HKCU\Environment` (the same place as the system's "Environment Variables" dialog), but your descriptions live in the `descriptions` file in `%APPDATA%\ev` (or `%EV_HOME%`), not in the registry.
 - **macOS / Linux:** `~/.config/ev/` (or `$XDG_CONFIG_HOME/ev`, or `$EV_HOME`) holds the variables and generated
-  `env.sh` / `env.fish` files and the `descriptions` file. `ev init` adds one line to your shell startup file (`.zshrc`, `.bashrc`,
-  `.bash_profile`/`.profile`, or fish's `conf.d/ev.fish`) that loads them.
+  `env.sh` / `env.fish` files and the `descriptions` file. `ev init` adds one line that loads them to these startup files, depending on your shell:
+  - zsh: `${ZDOTDIR:-$HOME}/.zshenv`, so scripts and `zsh -c` see the variables too
+  - bash on Linux: `~/.bashrc` and `~/.profile`
+  - bash on macOS: `~/.bash_profile` (or `~/.profile` if only that one exists)
+  - fish: `conf.d/ev.fish`
+  - other shells: `~/.profile`
+
+  A hook line that an earlier version put in `.zshrc` is left alone. Loading twice is harmless.
+  Concurrent changes are serialized with a lock file in that config directory.
+
+Limits (macOS / Linux):
+
+- Apps started from the Dock, Finder or a desktop launcher do not see ev's variables; only shells do. (Windows apps do see them.)
+- Multi-line values are not supported: newlines and NUL characters are rejected.
 
 ## Update and uninstall
 
@@ -138,6 +156,8 @@ $env:EV_UNINSTALL = '1'; irm https://github.com/FahimSifnatul/ev/releases/latest
 Your variables are left in place.
 
 ## Build from source
+
+Needs Rust 1.89 or newer (`rust-version` in `Cargo.toml`).
 
 ```sh
 cargo build --release   # binary at target/release/ev
