@@ -112,9 +112,9 @@ fn contains(hay: &[u8], needle: &[u8]) -> bool {
     hay.windows(needle.len()).any(|w| w == needle)
 }
 
-/// `(key, rest)` when the line assigns an exported variable. For sh-style
-/// lines `rest` follows the `=`; for fish it follows the name.
-fn parse_assign(line: &[u8]) -> Option<(&str, &[u8])> {
+/// `(key, rest, is_fish)` when the line assigns an exported variable. For
+/// sh-style lines `rest` follows the `=`; for fish it follows the name.
+fn parse_assign(line: &[u8]) -> Option<(&str, &[u8], bool)> {
     const SH: [&[u8]; 3] = [b"export", b"typeset -x", b"declare -x"];
     const FISH: [&[u8]; 3] = [b"set -gx", b"set -Ux", b"set -x"];
     let line = trim_start(line);
@@ -134,9 +134,9 @@ fn parse_assign(line: &[u8]) -> Option<(&str, &[u8])> {
     let (key, after) = rest.split_at(n);
     let key = std::str::from_utf8(key).ok()?;
     if fish {
-        return (after.is_empty() || is_blank(after[0])).then_some((key, after));
+        return (after.is_empty() || is_blank(after[0])).then_some((key, after, true));
     }
-    after.strip_prefix(b"=").map(|value| (key, value))
+    after.strip_prefix(b"=").map(|value| (key, value, false))
 }
 
 /// True when the value refers to the variable being defined (`$KEY`, `${KEY`).
@@ -156,9 +156,11 @@ fn refers_to(value: &[u8], key: &str) -> bool {
 
 /// True when the value runs onto another line or chains other commands, so
 /// commenting out this one line would be wrong.
-fn is_complex(value: &[u8]) -> bool {
+/// In sh-style lines, an unquoted blank followed by anything but a comment
+/// means more words (`A=1 B=2`, `A=1 cmd`), which we must not drop.
+fn is_complex(value: &[u8], fish: bool) -> bool {
     let value = strip_cr(value);
-    let (mut quote, mut depth, mut i) = (None::<u8>, 0i32, 0);
+    let (mut quote, mut depth, mut braces, mut i) = (None::<u8>, 0i32, 0i32, 0);
     while i < value.len() {
         let b = value[i];
         match quote {
@@ -184,7 +186,16 @@ fn is_complex(value: &[u8]) -> bool {
                         return true;
                     }
                 }
-                b'\'' | b'"' => quote = Some(b),
+                b'\'' | b'"' | b'`' => quote = Some(b),
+                b' ' | b'\t' if !fish && depth == 0 && braces == 0 => {
+                    let rest = trim_start(&value[i..]);
+                    if rest.is_empty() || rest[0] == b'#' {
+                        break;
+                    }
+                    return true;
+                }
+                b'{' if i > 0 && value[i - 1] == b'$' => braces += 1,
+                b'}' if braces > 0 => braces -= 1,
                 b'#' if i == 0 || is_blank(value[i - 1]) => break,
                 b'(' => depth += 1,
                 b')' => depth -= 1,
@@ -194,7 +205,7 @@ fn is_complex(value: &[u8]) -> bool {
         }
         i += 1;
     }
-    quote.is_some() || depth > 0
+    quote.is_some() || depth > 0 || braces > 0
 }
 
 struct Found<'a> {
@@ -210,12 +221,12 @@ fn assignments(bytes: &[u8]) -> Vec<Found<'_>> {
         .enumerate()
         .filter(|(_, line)| !contains(line, HOOK_MARKER))
         .filter_map(|(i, line)| {
-            let (key, value) = parse_assign(line)?;
+            let (key, value, fish) = parse_assign(line)?;
             Some(Found {
                 line_no: i + 1,
                 key,
                 line: strip_cr(line),
-                editable: !refers_to(value, key) && !is_complex(value),
+                editable: !refers_to(value, key) && !is_complex(value, fish),
             })
         })
         .collect()
@@ -265,15 +276,18 @@ pub fn scan_all() -> BTreeMap<String, String> {
 /// exists yet. Files that cannot be changed are reported, not errors.
 pub fn comment_out(hits: &[Hit], backup: bool) -> Result<Report> {
     let mut report = Report::default();
-    let mut by_file: BTreeMap<&Path, Vec<&Hit>> = BTreeMap::new();
+    // keyed by resolved path so two names for one file (a symlinked
+    // ~/.profile) are edited once
+    let mut by_file: BTreeMap<PathBuf, (&Path, Vec<&Hit>)> = BTreeMap::new();
     for hit in hits {
         if hit.editable {
-            by_file.entry(&hit.file).or_default().push(hit);
+            let real = fs::canonicalize(&hit.file).unwrap_or_else(|_| hit.file.clone());
+            by_file.entry(real).or_insert((&hit.file, Vec::new())).1.push(hit);
         } else {
             report.left.push(hit.clone());
         }
     }
-    for (file, file_hits) in by_file {
+    for (file, file_hits) in by_file.into_values() {
         match edit_file(file, &file_hits, backup) {
             Ok(()) => report.commented.extend(file_hits.into_iter().cloned()),
             Err(err) => report.skipped.push(Skipped {
@@ -311,8 +325,18 @@ fn edit_file(file: &Path, hits: &[&Hit], backup: bool) -> Result<()> {
         if !unchanged {
             bail!("line {line_no} changed since it was scanned");
         }
-        out.extend_from_slice(REMOVED);
-        out.extend_from_slice(raw);
+        let indent = raw.len() - trim_start(raw).len();
+        let is_fish = parse_assign(body).is_some_and(|(_, _, fish)| fish);
+        if indent > 0 && !is_fish {
+            // a no-op keeps `if`/`case`/function bodies syntactically valid
+            out.extend_from_slice(&raw[..indent]);
+            out.extend_from_slice(b": ");
+            out.extend_from_slice(REMOVED);
+            out.extend_from_slice(&raw[indent..]);
+        } else {
+            out.extend_from_slice(REMOVED);
+            out.extend_from_slice(raw);
+        }
         done += 1;
     }
     if done != wanted.len() {
@@ -530,7 +554,7 @@ mod tests {
         assert_eq!(report.commented.len(), 2);
         assert_eq!(
             fs::read_to_string(&rc).unwrap(),
-            "# top\n# removed by ev: export FOO=1\nexport KEEP=2\n# removed by ev:   FOO=3\n"
+            "# top\n# removed by ev: export FOO=1\nexport KEEP=2\n  : # removed by ev: FOO=3\n"
         );
         let bak = fx.home.join(".zshrc.ev-bak");
         let original = "# top\nexport FOO=1\nexport KEEP=2\n  FOO=3\n";
@@ -627,5 +651,77 @@ mod tests {
         let report = comment_out(&hits, true).unwrap();
         assert_eq!(report.skipped.len(), 1);
         assert_eq!(fs::read_to_string(&rc).unwrap(), "echo different\n");
+    }
+
+    #[test]
+    fn inline_prefix_and_multi_assignments_are_not_editable() {
+        let fx = Fx::new();
+        fx.write(
+            ".zshrc",
+            "FOO=1 cmd\nexport FOO=1 B=2\nFOO=1 B=2\nexport FOO=1 B=$FOO\nexport B=1 FOO=2\n",
+        );
+        let hits = fx.scan("FOO");
+        assert_eq!(hits.len(), 4, "{hits:?}");
+        assert!(hits.iter().all(|h| !h.editable), "{hits:?}");
+    }
+
+    #[test]
+    fn spaces_inside_quotes_and_substitutions_stay_editable() {
+        let fx = Fx::new();
+        fx.write(
+            ".zshrc",
+            "export A=\"x y\"\nexport A=1 # comment\nexport A=$(echo a b)\nexport A=${B:-x y}\nexport A='p q'  \n",
+        );
+        let hits = fx.scan("A");
+        assert_eq!(hits.len(), 5);
+        assert!(hits.iter().all(|h| h.editable), "{hits:?}");
+    }
+
+    #[test]
+    fn fish_values_with_spaces_stay_editable() {
+        let fx = Fx::new();
+        fx.write(".config/fish/config.fish", "set -gx A one two\n");
+        assert!(fx.scan("A")[0].editable);
+    }
+
+    #[test]
+    fn comment_out_uses_noop_for_indented_sh_lines_only() {
+        let fx = Fx::new();
+        let rc = fx.write(".zshrc", "export A=1\n\texport A=2\n    A=3\n");
+        fx.write(".config/fish/config.fish", "set -gx A 1\n  set -gx A 2\n");
+        comment_out(&fx.scan("A"), true).unwrap();
+        assert_eq!(
+            fs::read_to_string(&rc).unwrap(),
+            "# removed by ev: export A=1\n\t: # removed by ev: export A=2\n    : # removed by ev: A=3\n"
+        );
+        assert_eq!(
+            fs::read_to_string(fx.home.join(".config/fish/config.fish")).unwrap(),
+            "# removed by ev: set -gx A 1\n# removed by ev:   set -gx A 2\n"
+        );
+    }
+
+    #[test]
+    fn indented_block_body_stays_valid_shell() {
+        let fx = Fx::new();
+        let rc = fx.write(".profile", "if true; then\n  export A=1\nfi\necho ok\n");
+        let Ok(probe) = std::process::Command::new("sh").arg("-c").arg("true").status() else {
+            return; // no sh available
+        };
+        assert!(probe.success());
+        comment_out(&fx.scan("A"), true).unwrap();
+        let check = std::process::Command::new("sh").arg("-n").arg(&rc).status().unwrap();
+        assert!(check.success(), "{}", fs::read_to_string(&rc).unwrap());
+    }
+
+    #[test]
+    fn symlinked_rc_is_edited_once() {
+        let fx = Fx::new();
+        let real = fx.write(".bashrc", "export FOO=1\n");
+        std::os::unix::fs::symlink(&real, fx.home.join(".profile")).unwrap();
+        let hits = fx.scan("FOO");
+        assert_eq!(hits.len(), 2);
+        let report = comment_out(&hits, true).unwrap();
+        assert!(report.skipped.is_empty(), "{report:?}");
+        assert_eq!(fs::read_to_string(&real).unwrap(), "# removed by ev: export FOO=1\n");
     }
 }
