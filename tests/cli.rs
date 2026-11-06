@@ -644,3 +644,30 @@ fn heredoc_lines_are_not_rc_hits() {
     env.ok(&["delete", "FOO"]);
     assert_eq!(std::fs::read_to_string(env.rc()).unwrap(), original);
 }
+
+#[test]
+fn parallel_sets_do_not_lose_updates() {
+    let env = Env::new();
+    let children: Vec<_> = (0..20)
+        .map(|i| {
+            Command::new(env!("CARGO_BIN_EXE_ev"))
+                .args(["set", &format!("K{i}"), "v"])
+                .env_clear()
+                .env("EV_HOME", env.ev_home())
+                .env("HOME", env.root.path())
+                .env("ZDOTDIR", env.root.path())
+                .env("SHELL", "/bin/zsh")
+                .env("EV_SYSTEM_ROOT", env.root.path().join("sys"))
+                .stdin(Stdio::null())
+                .spawn()
+                .unwrap()
+        })
+        .collect();
+    for mut child in children {
+        assert!(child.wait().unwrap().success());
+    }
+    let listed = env.ok(&["list", "--ev"]);
+    for i in 0..20 {
+        assert!(listed.contains(&format!("K{i}=v\n")), "missing K{i}: {listed}");
+    }
+}

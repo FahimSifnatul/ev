@@ -137,18 +137,25 @@ fn hook_line(dir: &Path, fish: bool) -> String {
 
 pub(crate) fn write_atomic(path: &Path, content: &str) -> Result<()> {
     let mut tmp = path.as_os_str().to_owned();
-    tmp.push(".tmp");
+    tmp.push(format!(".{}.tmp", std::process::id()));
     let tmp = PathBuf::from(tmp);
     // values may be secrets: owner-only
-    fs::OpenOptions::new()
+    let written = fs::OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(true)
         .mode(0o600)
         .open(&tmp)
         .and_then(|mut f| f.write_all(content.as_bytes()))
-        .with_context(|| format!("writing {}", tmp.display()))?;
-    fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))
+        .with_context(|| format!("writing {}", tmp.display()));
+    if let Err(err) = written {
+        let _ = fs::remove_file(&tmp);
+        return Err(err);
+    }
+    fs::rename(&tmp, path).with_context(|| {
+        let _ = fs::remove_file(&tmp);
+        format!("replacing {}", path.display())
+    })
 }
 
 fn read_entries(dir: &Path) -> Result<Vec<Entry>> {
@@ -161,14 +168,27 @@ fn read_entries(dir: &Path) -> Result<Vec<Entry>> {
 
 fn write_all(dir: &Path, entries: &[Entry]) -> Result<()> {
     fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-    write_atomic(&dir.join("vars"), &serialize(entries))?;
+    // `vars` is the source of truth and goes last: it is the commit point
     write_atomic(&dir.join("env.sh"), &render_sh(entries))?;
-    write_atomic(&dir.join("env.fish"), &render_fish(entries))
+    write_atomic(&dir.join("env.fish"), &render_fish(entries))?;
+    write_atomic(&dir.join("vars"), &serialize(entries))
 }
 
 fn change(new: Entry) -> Result<()> {
     let dir = config_dir()?;
+    fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    // exclusive lock for the whole read-modify-write; released on drop
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(dir.join("lock"))
+        .context("opening lock file")?;
+    lock.lock().context("locking store")?;
     write_all(&dir, &replace(read_entries(&dir)?, new))?;
+    drop(lock);
     // the hint is advisory: a failed check must not fail a saved change
     if matches!(hook_installed(&dir), Ok(false)) {
         eprintln!("Run 'ev init' once so new shells load these variables.");
