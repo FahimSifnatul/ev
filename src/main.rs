@@ -2,6 +2,8 @@ mod danger;
 mod describe;
 mod notes;
 mod output;
+#[cfg(unix)]
+mod sources;
 mod store;
 
 use std::collections::BTreeMap;
@@ -82,7 +84,11 @@ fn run(cli: Cli) -> Result<()> {
         Command::Delete { key } => {
             store::validate_key(&key)?;
             guard(&key, cli.yes)?;
+            #[cfg(unix)]
+            let rc_hits = confirm_rc_edits(&key, cli.yes)?;
             store::delete(&key)?;
+            #[cfg(unix)]
+            comment_out_rc_lines(&rc_hits);
             if let Err(err) = notes::remove(&key) {
                 eprintln!("ev: warning: {err:#}");
             }
@@ -148,12 +154,62 @@ fn guard(key: &str, yes: bool) -> Result<()> {
     }
 }
 
+/// Show where shell startup files also define `key` and ask before editing them.
+#[cfg(unix)]
+fn confirm_rc_edits(key: &str, yes: bool) -> Result<Vec<sources::Hit>> {
+    let hits = sources::scan(key);
+    if hits.is_empty() {
+        return Ok(hits);
+    }
+    eprintln!("{key} is also defined in your shell startup files:");
+    for hit in &hits {
+        eprintln!("  {}:{}: {}", hit.file.display(), hit.line_no, hit.text);
+    }
+    if hits.iter().any(|h| h.editable) {
+        eprintln!("ev will comment these lines out (originals are kept in <file>.ev-bak).");
+        confirm(yes)?;
+    }
+    Ok(hits)
+}
+
+/// The `-KEY` marker already hides the variable, so problems here only warn.
+#[cfg(unix)]
+fn comment_out_rc_lines(hits: &[sources::Hit]) {
+    if hits.is_empty() {
+        return;
+    }
+    let report = match sources::comment_out(hits, true) {
+        Ok(report) => report,
+        Err(err) => {
+            eprintln!("ev: warning: {err:#}");
+            return;
+        }
+    };
+    for hit in &report.commented {
+        println!("Commented out {}:{}", hit.file.display(), hit.line_no);
+    }
+    for hit in &report.left {
+        eprintln!(
+            "ev: left {}:{} as is (it appends to itself or spans several lines); edit it by hand",
+            hit.file.display(),
+            hit.line_no
+        );
+    }
+    for skipped in &report.skipped {
+        eprintln!(
+            "ev: could not edit {}: {}. For system files run 'sudo ev delete <KEY>'.",
+            skipped.file.display(),
+            skipped.reason
+        );
+    }
+}
+
 fn confirm(yes: bool) -> Result<()> {
     if yes {
         return Ok(());
     }
     if !io::stdin().is_terminal() {
-        bail!("refusing to change a critical variable without --yes (stdin is not a terminal)");
+        bail!("refusing to continue without --yes (stdin is not a terminal)");
     }
     eprint!("Continue? [y/N] ");
     io::stderr().flush()?;

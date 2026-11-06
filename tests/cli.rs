@@ -31,6 +31,7 @@ impl Env {
             .env("HOME", self.root.path())
             .env("ZDOTDIR", self.root.path())
             .env("SHELL", "/bin/zsh")
+            .env("EV_SYSTEM_ROOT", self.root.path().join("sys"))
             .stdin(Stdio::null())
             .output()
             .unwrap()
@@ -272,4 +273,47 @@ fn piped_output_ignores_descriptions() {
     env.ok(&["set", "HOME", "/h", "--yes"]);
     assert_eq!(env.ok(&["get", "FOO"]), "bar\n");
     assert_eq!(env.ok(&["list"]), "FOO=bar\nHOME=/h\n");
+}
+
+#[test]
+fn delete_comments_out_rc_line() {
+    let env = Env::new();
+    let rc = env.rc();
+    std::fs::write(&rc, "export FOO=old\nexport KEEP=1\n").unwrap();
+    env.ok(&["set", "FOO", "bar"]);
+    let out = env.ok(&["--yes", "delete", "FOO"]);
+    assert!(out.contains("Done"), "{out}");
+    assert_eq!(
+        std::fs::read_to_string(&rc).unwrap(),
+        "# removed by ev: export FOO=old\nexport KEEP=1\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(env.root.path().join(".zshrc.ev-bak")).unwrap(),
+        "export FOO=old\nexport KEEP=1\n"
+    );
+    assert_eq!(env.read("vars"), "-FOO\n");
+}
+
+#[test]
+fn delete_leaves_path_append() {
+    let env = Env::new();
+    let rc = env.rc();
+    let original = "export PATH=\"$PATH:/opt/x\"\n";
+    std::fs::write(&rc, original).unwrap();
+    let out = env.run(&["--yes", "delete", "PATH"]);
+    assert!(out.status.success());
+    assert_eq!(std::fs::read_to_string(&rc).unwrap(), original);
+    assert!(!env.root.path().join(".zshrc.ev-bak").exists());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains(".zshrc:1:"), "{stderr}");
+    assert_eq!(env.read("vars"), "-PATH\n");
+}
+
+#[test]
+fn delete_with_rc_hits_needs_yes_without_terminal() {
+    let env = Env::new();
+    std::fs::write(env.rc(), "export FOO=old\n").unwrap();
+    assert!(!env.run(&["delete", "FOO"]).status.success());
+    assert_eq!(std::fs::read_to_string(env.rc()).unwrap(), "export FOO=old\n");
+    assert_eq!(env.read("vars"), "");
 }
