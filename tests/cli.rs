@@ -27,10 +27,12 @@ impl Env {
     fn run(&self, args: &[&str]) -> Output {
         Command::new(env!("CARGO_BIN_EXE_ev"))
             .args(args)
+            .env_clear()
             .env("EV_HOME", self.ev_home())
             .env("HOME", self.root.path())
             .env("ZDOTDIR", self.root.path())
             .env("SHELL", "/bin/zsh")
+            .env("EV_SYSTEM_ROOT", self.root.path().join("sys"))
             .stdin(Stdio::null())
             .output()
             .unwrap()
@@ -57,7 +59,7 @@ fn set_then_get_and_list() {
     env.ok(&["set", "FOO", "bar baz"]);
     env.ok(&["set", "A", "1"]);
     assert_eq!(env.ok(&["get", "FOO"]), "bar baz\n");
-    assert_eq!(env.ok(&["list"]), "A=1\nFOO=bar baz\n");
+    assert_eq!(env.ok(&["list", "--ev"]), "A=1\nFOO=bar baz\n");
 }
 
 #[test]
@@ -76,10 +78,21 @@ fn set_overwrites() {
 }
 
 #[test]
-fn unset_removes_and_records_marker() {
+fn unset_sets_empty() {
     let env = Env::new();
     env.ok(&["set", "FOO", "bar"]);
     env.ok(&["unset", "FOO"]);
+    assert_eq!(env.ok(&["get", "FOO"]), "\n");
+    assert_eq!(env.read("vars"), "FOO=\n");
+    assert_eq!(env.read("env.sh"), "export FOO=''\n");
+    assert_eq!(env.ok(&["list", "--ev"]), "FOO=\n");
+}
+
+#[test]
+fn delete_records_marker() {
+    let env = Env::new();
+    env.ok(&["set", "FOO", "bar"]);
+    env.ok(&["delete", "FOO"]);
     assert!(!env.run(&["get", "FOO"]).status.success());
     assert_eq!(env.read("vars"), "-FOO\n");
     assert_eq!(env.read("env.sh"), "unset FOO\n");
@@ -87,14 +100,21 @@ fn unset_removes_and_records_marker() {
 }
 
 #[test]
-fn aliases_work() {
+fn rm_alias_deletes() {
     let env = Env::new();
     env.ok(&["add", "FOO", "1"]);
     assert_eq!(env.ok(&["get", "FOO"]), "1\n");
-    env.ok(&["delete", "FOO"]);
-    env.ok(&["add", "FOO", "2"]);
     env.ok(&["rm", "FOO"]);
-    assert_eq!(env.ok(&["list"]), "");
+    assert_eq!(env.read("vars"), "-FOO\n");
+    assert_eq!(env.ok(&["list", "--ev"]), "");
+}
+
+#[test]
+fn unset_no_longer_aliases_delete() {
+    let env = Env::new();
+    env.ok(&["set", "FOO", "1"]);
+    env.ok(&["unset", "FOO"]);
+    assert_eq!(env.read("vars"), "FOO=\n");
 }
 
 #[test]
@@ -210,11 +230,19 @@ fn set_without_desc_keeps_existing_description() {
 }
 
 #[test]
-fn unset_removes_description() {
+fn unset_keeps_description() {
+    let env = Env::new();
+    env.ok(&["set", "FOO", "bar", "-d", "still here"]);
+    env.ok(&["unset", "FOO"]);
+    assert_eq!(env.read("descriptions"), "FOO=still here\n");
+}
+
+#[test]
+fn delete_removes_description() {
     let env = Env::new();
     env.ok(&["set", "FOO", "bar", "-d", "gone soon"]);
     env.ok(&["set", "KEEP", "1", "-d", "stay"]);
-    env.ok(&["unset", "FOO"]);
+    env.ok(&["delete", "FOO"]);
     assert_eq!(env.read("descriptions"), "KEEP=stay\n");
 }
 
@@ -245,5 +273,374 @@ fn piped_output_ignores_descriptions() {
     env.ok(&["set", "FOO", "bar", "-d", "described"]);
     env.ok(&["set", "HOME", "/h", "--yes"]);
     assert_eq!(env.ok(&["get", "FOO"]), "bar\n");
-    assert_eq!(env.ok(&["list"]), "FOO=bar\nHOME=/h\n");
+    assert_eq!(env.ok(&["list", "--ev"]), "FOO=bar\nHOME=/h\n");
+}
+
+#[test]
+fn delete_comments_out_rc_line() {
+    let env = Env::new();
+    let rc = env.rc();
+    std::fs::write(&rc, "export FOO=old\nexport KEEP=1\n").unwrap();
+    env.ok(&["set", "FOO", "bar"]);
+    let out = env.ok(&["--yes", "delete", "FOO"]);
+    assert!(out.contains("Done"), "{out}");
+    assert_eq!(
+        std::fs::read_to_string(&rc).unwrap(),
+        ": # removed by ev: export FOO=old\nexport KEEP=1\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(env.root.path().join(".zshrc.ev-bak")).unwrap(),
+        "export FOO=old\nexport KEEP=1\n"
+    );
+    assert_eq!(env.read("vars"), "-FOO\n");
+}
+
+#[test]
+fn delete_leaves_path_append() {
+    let env = Env::new();
+    let rc = env.rc();
+    let original = "export PATH=\"$PATH:/opt/x\"\n";
+    std::fs::write(&rc, original).unwrap();
+    let out = env.run(&["--yes", "delete", "PATH"]);
+    assert!(out.status.success());
+    assert_eq!(std::fs::read_to_string(&rc).unwrap(), original);
+    assert!(!env.root.path().join(".zshrc.ev-bak").exists());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains(".zshrc:1:"), "{stderr}");
+    assert_eq!(env.read("vars"), "-PATH\n");
+}
+
+#[test]
+fn delete_with_rc_hits_needs_yes_without_terminal() {
+    let env = Env::new();
+    std::fs::write(env.rc(), "export FOO=old\n").unwrap();
+    assert!(!env.run(&["delete", "FOO"]).status.success());
+    assert_eq!(std::fs::read_to_string(env.rc()).unwrap(), "export FOO=old\n");
+    assert_eq!(env.read("vars"), "");
+}
+
+#[test]
+fn list_includes_inherited_process_vars() {
+    let env = Env::new();
+    let out = Command::new(env!("CARGO_BIN_EXE_ev"))
+        .arg("list")
+        .env_clear()
+        .env("EV_HOME", env.ev_home())
+        .env("HOME", env.root.path())
+        .env("EV_SYSTEM_ROOT", env.root.path().join("sys"))
+        .env("INHERITED_VAR", "from-parent")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(text.lines().any(|l| l == "INHERITED_VAR=from-parent"), "{text}");
+}
+
+#[test]
+fn get_finds_inherited_process_var() {
+    let env = Env::new();
+    let out = Command::new(env!("CARGO_BIN_EXE_ev"))
+        .args(["get", "INHERITED_VAR"])
+        .env_clear()
+        .env("EV_HOME", env.ev_home())
+        .env("HOME", env.root.path())
+        .env("EV_SYSTEM_ROOT", env.root.path().join("sys"))
+        .env("INHERITED_VAR", "from-parent")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert_eq!(String::from_utf8(out.stdout).unwrap(), "from-parent\n");
+}
+
+#[test]
+fn ev_store_overrides_inherited_value() {
+    let env = Env::new();
+    env.ok(&["set", "INHERITED_VAR", "mine"]);
+    let out = Command::new(env!("CARGO_BIN_EXE_ev"))
+        .arg("list")
+        .env_clear()
+        .env("EV_HOME", env.ev_home())
+        .env("HOME", env.root.path())
+        .env("EV_SYSTEM_ROOT", env.root.path().join("sys"))
+        .env("INHERITED_VAR", "from-parent")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    let text = String::from_utf8(out.stdout).unwrap();
+    let lines: Vec<&str> = text.lines().filter(|l| l.starts_with("INHERITED_VAR")).collect();
+    assert_eq!(lines, ["INHERITED_VAR=mine"]);
+}
+
+#[test]
+fn list_ev_shows_only_managed_vars() {
+    let env = Env::new();
+    env.ok(&["set", "MINE", "1"]);
+    let out = Command::new(env!("CARGO_BIN_EXE_ev"))
+        .args(["list", "--ev"])
+        .env_clear()
+        .env("EV_HOME", env.ev_home())
+        .env("HOME", env.root.path())
+        .env("EV_SYSTEM_ROOT", env.root.path().join("sys"))
+        .env("INHERITED_VAR", "from-parent")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8(out.stdout).unwrap(), "MINE=1\n");
+}
+
+#[test]
+fn delete_marker_hides_inherited_var() {
+    let env = Env::new();
+    env.ok(&["delete", "INHERITED_VAR"]);
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_ev"))
+            .args(args)
+            .env_clear()
+            .env("EV_HOME", env.ev_home())
+            .env("HOME", env.root.path())
+            .env("EV_SYSTEM_ROOT", env.root.path().join("sys"))
+            .env("INHERITED_VAR", "from-parent")
+            .stdin(Stdio::null())
+            .output()
+            .unwrap()
+    };
+    let text = String::from_utf8(run(&["list"]).stdout).unwrap();
+    assert!(!text.contains("INHERITED_VAR"), "{text}");
+    assert!(!run(&["get", "INHERITED_VAR"]).status.success());
+}
+
+// --- app providers (go) ---
+
+fn go_installed() -> bool {
+    Command::new("go")
+        .arg("version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+impl Env {
+    /// Like `run`, but with `go` on PATH and its config file inside the tempdir.
+    fn run_go(&self, args: &[&str]) -> Output {
+        Command::new(env!("CARGO_BIN_EXE_ev"))
+            .args(args)
+            .env_clear()
+            .env("EV_HOME", self.ev_home())
+            .env("HOME", self.root.path())
+            .env("ZDOTDIR", self.root.path())
+            .env("SHELL", "/bin/zsh")
+            .env("EV_SYSTEM_ROOT", self.root.path().join("sys"))
+            .env("PATH", std::env::var_os("PATH").unwrap())
+            .env("GOENV", self.root.path().join("goenv"))
+            .stdin(Stdio::null())
+            .output()
+            .unwrap()
+    }
+
+    fn run_go_with(&self, args: &[&str], name: &str, value: &str) -> Output {
+        Command::new(env!("CARGO_BIN_EXE_ev"))
+            .args(args)
+            .env_clear()
+            .env("EV_HOME", self.ev_home())
+            .env("HOME", self.root.path())
+            .env("ZDOTDIR", self.root.path())
+            .env("SHELL", "/bin/zsh")
+            .env("EV_SYSTEM_ROOT", self.root.path().join("sys"))
+            .env("PATH", std::env::var_os("PATH").unwrap())
+            .env("GOENV", self.root.path().join("goenv"))
+            .env(name, value)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap()
+    }
+
+    fn ok_go(&self, args: &[&str]) -> String {
+        let out = self.run_go(args);
+        assert!(
+            out.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).unwrap()
+    }
+}
+
+#[test]
+fn set_then_get_go_var() {
+    if !go_installed() {
+        return;
+    }
+    let env = Env::new();
+    env.ok_go(&["set", "GOPROXY", "direct", "--app", "go"]);
+    assert_eq!(env.ok_go(&["get", "GOPROXY", "--app", "go"]), "direct\n");
+    // the value lives in go's file, not in ev's store
+    assert_eq!(env.read("vars"), "");
+    // defaults are readable too
+    assert!(!env.ok_go(&["get", "GOOS", "--app", "go"]).trim().is_empty());
+}
+
+#[test]
+fn unset_empties_go_var() {
+    if !go_installed() {
+        return;
+    }
+    let env = Env::new();
+    env.ok_go(&["set", "GOPROXY", "direct", "--app", "go"]);
+    env.ok_go(&["unset", "GOPROXY", "--app", "go"]);
+    assert!(!env.run_go(&["get", "GOPROXY", "--app", "go"]).status.success());
+}
+
+#[test]
+fn delete_resets_go_var() {
+    if !go_installed() {
+        return;
+    }
+    let env = Env::new();
+    env.ok_go(&["set", "GOPROXY", "direct", "--app", "go"]);
+    env.ok_go(&["delete", "GOPROXY", "--app", "go"]);
+    assert_ne!(env.ok_go(&["get", "GOPROXY", "--app", "go"]), "direct\n");
+    assert!(!std::fs::read_to_string(env.root.path().join("goenv"))
+        .unwrap_or_default()
+        .contains("GOPROXY=direct"));
+}
+
+#[test]
+fn delete_without_app_also_clears_go_var() {
+    if !go_installed() {
+        return;
+    }
+    let env = Env::new();
+    env.ok_go(&["set", "GOPROXY", "direct", "--app", "go"]);
+    env.ok_go(&["--yes", "delete", "GOPROXY"]);
+    assert_ne!(env.ok_go(&["get", "GOPROXY", "--app", "go"]), "direct\n");
+    assert_eq!(env.read("vars"), "-GOPROXY\n");
+}
+
+#[test]
+fn list_shows_go_source() {
+    if !go_installed() {
+        return;
+    }
+    let env = Env::new();
+    env.ok_go(&["set", "GOPROXY", "direct", "--app", "go"]);
+    assert!(env.ok_go(&["list"]).lines().any(|l| l == "GOPROXY=direct"));
+    // go values are not ev-managed
+    assert!(!env.ok_go(&["list", "--ev"]).contains("GOPROXY"));
+}
+
+#[test]
+fn unknown_app_is_rejected() {
+    let env = Env::new();
+    let out = env.run(&["set", "A", "1", "--app", "nope"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("unknown app 'nope'"));
+    assert_eq!(env.read("vars"), "");
+}
+
+#[test]
+fn unavailable_app_is_rejected() {
+    // no PATH at all: go cannot be found
+    let env = Env::new();
+    for args in [
+        &["get", "GOOS", "--app", "go"][..],
+        &["set", "GOPROXY", "x", "--app", "go"][..],
+    ] {
+        let out = env.run(args);
+        assert!(!out.status.success());
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("not available"),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    // the merged list just skips it
+    env.ok(&["list"]);
+}
+
+#[test]
+fn delete_with_go_holder_needs_yes_without_terminal() {
+    if !go_installed() {
+        return;
+    }
+    let env = Env::new();
+    env.ok_go(&["set", "GOPROXY", "direct", "--app", "go"]);
+    let out = env.run_go(&["delete", "GOPROXY"]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("go env -u GOPROXY"), "{stderr}");
+    // nothing changed
+    assert_eq!(env.read("vars"), "");
+    assert_eq!(env.ok_go(&["get", "GOPROXY", "--app", "go"]), "direct\n");
+}
+
+#[test]
+fn os_environment_values_are_not_go_settings() {
+    if !go_installed() {
+        return;
+    }
+    let env = Env::new();
+    std::fs::write(env.rc(), "export GOPATH=/from/rc\n").unwrap();
+    let out = env.run_go_with(&["list"], "GOPATH", "/from/rc");
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(text.lines().any(|l| l == "GOPATH=/from/rc"), "{text}");
+    // not go's: --app go has nothing to remove and says so
+    let out = env.run_go_with(&["delete", "GOPATH", "--app", "go"], "GOPATH", "/from/rc");
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("Nothing to do"), "{stdout}");
+    assert!(!stdout.contains("Done"), "{stdout}");
+    // and plain delete does not offer go as a holder
+    let out = env.run_go_with(&["--yes", "delete", "GOPATH"], "GOPATH", "/from/rc");
+    assert!(out.status.success());
+    assert!(!String::from_utf8_lossy(&out.stderr).contains("go env -u"));
+}
+
+#[test]
+fn sudo_hint_names_the_key_and_only_for_system_files() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = Env::new();
+    // system files must live outside HOME
+    let sys = TempDir::new().unwrap();
+    let etc = sys.path().join("etc");
+    std::fs::create_dir_all(&etc).unwrap();
+    let profile = etc.join("profile");
+    std::fs::write(&profile, "export MYKEY=1\n").unwrap();
+    std::fs::set_permissions(&profile, std::fs::Permissions::from_mode(0o444)).unwrap();
+    let rc = env.root.path().join(".zshenv");
+    std::fs::write(&rc, "export MYKEY=2\n").unwrap();
+    std::fs::set_permissions(&rc, std::fs::Permissions::from_mode(0o444)).unwrap();
+    if std::fs::OpenOptions::new().write(true).open(&rc).is_ok() {
+        return; // running as root: permissions do not apply
+    }
+    let out = Command::new(env!("CARGO_BIN_EXE_ev"))
+        .args(["--yes", "delete", "MYKEY"])
+        .env_clear()
+        .env("EV_HOME", env.ev_home())
+        .env("HOME", env.root.path())
+        .env("SHELL", "/bin/zsh")
+        .env("EV_SYSTEM_ROOT", sys.path())
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let lines: Vec<&str> = stderr.lines().filter(|l| l.contains("could not edit")).collect();
+    assert_eq!(lines.len(), 2, "{stderr}");
+    let sys_line = lines.iter().find(|l| l.contains("etc/profile")).unwrap();
+    assert!(sys_line.contains("sudo ev delete MYKEY --yes"), "{stderr}");
+    let user_line = lines.iter().find(|l| l.contains(".zshenv")).unwrap();
+    assert!(!user_line.contains("sudo"), "{stderr}");
+}
+
+#[test]
+fn heredoc_lines_are_not_rc_hits() {
+    let env = Env::new();
+    let original = "cat <<EOF > /tmp/never\nexport FOO=doc\nEOF\n";
+    std::fs::write(env.rc(), original).unwrap();
+    // no rc hit, so no confirmation is needed even without --yes
+    env.ok(&["delete", "FOO"]);
+    assert_eq!(std::fs::read_to_string(env.rc()).unwrap(), original);
 }

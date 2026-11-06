@@ -1,5 +1,5 @@
 use anyhow::{bail, Context, Result};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::ErrorKind;
 use std::ptr;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -18,18 +18,6 @@ fn open(access: u32) -> Result<RegKey> {
 }
 
 const MACHINE_ENV: &str = r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment";
-
-/// Reads a string value; the registry matches names case-insensitively.
-fn read_string(key: &RegKey, name: &str) -> Result<Option<String>> {
-    match key.get_raw_value(name) {
-        Ok(raw) if matches!(raw.vtype, REG_SZ | REG_EXPAND_SZ) => {
-            Ok(Some(String::from_reg_value(&raw)?))
-        }
-        Ok(_) => Ok(None),
-        Err(e) if e.kind() == ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e).with_context(|| format!("cannot read {name}")),
-    }
-}
 
 fn defined_machine_wide(key: &str) -> Result<bool> {
     let machine = RegKey::predef(HKEY_LOCAL_MACHINE)
@@ -73,8 +61,24 @@ pub fn list() -> Result<BTreeMap<String, String>> {
     Ok(vars)
 }
 
-pub fn get(key: &str) -> Result<Option<String>> {
-    read_string(&open(KEY_READ)?, key)
+/// Windows keeps no delete marker: a deleted value is gone from the registry.
+pub fn deleted() -> Result<BTreeSet<String>> {
+    Ok(BTreeSet::new())
+}
+
+/// Names defined machine-wide (read-only).
+pub fn machine_names() -> Result<BTreeSet<String>> {
+    let machine = RegKey::predef(HKEY_LOCAL_MACHINE)
+        .open_subkey_with_flags(MACHINE_ENV, KEY_READ)
+        .context("cannot open the machine environment")?;
+    let mut names = BTreeSet::new();
+    for entry in machine.enum_values() {
+        let (name, raw) = entry?;
+        if matches!(raw.vtype, REG_SZ | REG_EXPAND_SZ) {
+            names.insert(name);
+        }
+    }
+    Ok(names)
 }
 
 pub fn set(key: &str, value: &str) -> Result<()> {
@@ -89,18 +93,49 @@ pub fn set(key: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn unset(key: &str) -> Result<()> {
-    match open(KEY_WRITE)?.delete_value(key) {
+/// Deletes the user value and, when the variable is also defined
+/// machine-wide, that one too (which needs an elevated process); otherwise
+/// the variable would still be there and "Done" would be wrong.
+pub fn delete(key: &str) -> Result<()> {
+    let user_removed = match open(KEY_WRITE)?.delete_value(key) {
+        Ok(()) => {
+            broadcast_change();
+            true
+        }
+        Err(e) if e.kind() == ErrorKind::NotFound => false,
+        Err(e) => return Err(e).with_context(|| format!("cannot delete {key}")),
+    };
+    delete_machine_wide(key, user_removed)
+}
+
+fn admin_hint(key: &str, user_removed: bool) -> String {
+    if user_removed {
+        format!(
+            "removed the user value of {key}, but it is still defined machine-wide; \
+             run as administrator to delete it there too"
+        )
+    } else {
+        format!("{key} is defined machine-wide; run as administrator to delete it")
+    }
+}
+
+/// Deletes a machine-wide value; needs an elevated (administrator) process.
+fn delete_machine_wide(key: &str, user_removed: bool) -> Result<()> {
+    if !defined_machine_wide(key)? {
+        return Ok(());
+    }
+    let machine = RegKey::predef(HKEY_LOCAL_MACHINE)
+        .open_subkey_with_flags(MACHINE_ENV, KEY_WRITE)
+        .map_err(|e| match e.kind() {
+            ErrorKind::PermissionDenied => anyhow::anyhow!(admin_hint(key, user_removed)),
+            _ => anyhow::Error::new(e).context("cannot open the machine environment"),
+        })?;
+    match machine.delete_value(key) {
         Ok(()) => {
             broadcast_change();
             Ok(())
         }
-        Err(e) if e.kind() == ErrorKind::NotFound => {
-            if defined_machine_wide(key)? {
-                bail!("{key} is defined machine-wide; removing it needs an administrator and ev does not edit it.");
-            }
-            Ok(())
-        }
+        Err(e) if e.kind() == ErrorKind::PermissionDenied => bail!(admin_hint(key, user_removed)),
         Err(e) => Err(e).with_context(|| format!("cannot delete {key}")),
     }
 }
@@ -120,13 +155,20 @@ mod tests {
         assert_eq!(value_type("%PATH%;x"), REG_EXPAND_SZ);
     }
 
+    #[test]
+    fn admin_hint_says_what_was_removed() {
+        assert!(admin_hint("A", true).contains("removed the user value of A"));
+        assert!(admin_hint("A", true).contains("still defined machine-wide"));
+        assert!(!admin_hint("A", false).contains("removed"));
+    }
+
     #[cfg(windows)]
     struct Cleanup(String);
 
     #[cfg(windows)]
     impl Drop for Cleanup {
         fn drop(&mut self) {
-            let _ = unset(&self.0);
+            let _ = delete(&self.0);
         }
     }
 
@@ -147,8 +189,8 @@ mod tests {
         assert_eq!(raw.vtype, REG_EXPAND_SZ);
         assert_eq!(list().unwrap()[&name], "%TEMP%\\x");
 
-        unset(&name).unwrap();
+        delete(&name).unwrap();
         assert!(!list().unwrap().contains_key(&name));
-        unset(&name).unwrap();
+        delete(&name).unwrap();
     }
 }

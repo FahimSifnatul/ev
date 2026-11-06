@@ -10,11 +10,6 @@ mod windows;
 #[cfg(windows)]
 pub use windows::*;
 
-#[cfg(unix)]
-pub fn get(key: &str) -> Result<Option<String>> {
-    Ok(list()?.get(key).cloned())
-}
-
 pub fn validate_key(key: &str) -> Result<()> {
     let mut chars = key.chars();
     let valid = matches!(chars.next(), Some(c) if c.is_ascii_alphabetic() || c == '_')

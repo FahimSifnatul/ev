@@ -3,7 +3,7 @@ name = "ev"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-description = "Manage permanent user-level environment variables"
+description = "Manage permanent environment variables from one command"
 
 [dependencies]
 anyhow = "1"
