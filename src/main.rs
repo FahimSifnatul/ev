@@ -172,17 +172,21 @@ fn run(cli: Cli) -> Result<()> {
             guard(&key, cli.yes)?;
             delete_everywhere(&key, cli.yes)?;
         }
-        Command::Get {
-            key,
-            app: Some(name),
-        } => match apps::find(&name)?.get(&key)? {
-            Some(value) => print_value(&key, &value),
-            None => std::process::exit(1),
-        },
-        Command::Get { key, app: None } => match merged::collect()?.get(&key) {
-            Some(row) => print_value(&row.name, &row.value),
-            None => std::process::exit(1),
-        },
+        Command::Get { key, app } => {
+            store::validate_key(&key)?;
+            let found = match app {
+                Some(name) => apps::find(&name)?
+                    .get(&key)?
+                    .map(|value| (key.clone(), value)),
+                None => merged::collect()?
+                    .get(&key)
+                    .map(|row| (row.name.clone(), row.value.clone())),
+            };
+            match found {
+                Some((name, value)) => print_value(&name, &value),
+                None => std::process::exit(1),
+            }
+        }
         Command::List { ev } => {
             let vars = if ev {
                 merged::ev_only()?

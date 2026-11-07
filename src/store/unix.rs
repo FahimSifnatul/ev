@@ -222,7 +222,7 @@ fn write_all(dir: &Path, entries: &[Entry]) -> Result<()> {
 }
 
 /// Takes the exclusive store lock; it is released when the file is dropped.
-fn lock_store(dir: &Path) -> Result<fs::File> {
+pub(crate) fn lock_store(dir: &Path) -> Result<fs::File> {
     fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     let lock = fs::OpenOptions::new()
         .read(true)

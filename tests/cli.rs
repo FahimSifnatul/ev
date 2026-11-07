@@ -865,3 +865,43 @@ fn set_expand_is_windows_only() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("--expand is only supported on Windows"));
     assert_eq!(env.read("vars"), "");
 }
+
+#[test]
+fn parallel_descriptions_do_not_lose_updates() {
+    let env = Env::new();
+    let children: Vec<_> = (0..10)
+        .map(|i| {
+            Command::new(env!("CARGO_BIN_EXE_ev"))
+                .args(["set", &format!("K{i}"), "v", "-d", &format!("note{i}")])
+                .env_clear()
+                .env("EV_HOME", env.ev_home())
+                .env("HOME", env.root.path())
+                .env("ZDOTDIR", env.root.path())
+                .env("SHELL", "/bin/zsh")
+                .env("EV_SYSTEM_ROOT", env.root.path().join("sys"))
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap()
+        })
+        .collect();
+    for mut child in children {
+        assert!(child.wait().unwrap().success());
+    }
+    let notes = env.read("descriptions");
+    for i in 0..10 {
+        assert!(
+            notes.contains(&format!("K{i}=note{i}\n")),
+            "missing K{i}: {notes}"
+        );
+    }
+}
+
+#[test]
+fn get_rejects_option_like_name() {
+    let env = Env::new();
+    let out = env.run(&["get", "--app", "go", "--", "-json"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("invalid name"));
+}
