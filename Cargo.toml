@@ -1,10 +1,15 @@
 [package]
 name = "ev"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 rust-version = "1.89"
 license = "MIT"
 description = "Manage permanent environment variables from one command"
+repository = "https://github.com/FahimSifnatul/ev"
+homepage = "https://github.com/FahimSifnatul/ev"
+readme = "README.md"
+keywords = ["environment", "env", "cli", "shell", "variables"]
+categories = ["command-line-utilities"]
 
 [dependencies]
 anyhow = "1"

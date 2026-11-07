@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
+use std::path::{Path, PathBuf};
 use std::{env, fs};
 
 use anyhow::{Context, Result};
@@ -132,7 +132,10 @@ fn rc_files() -> Result<Vec<(PathBuf, bool)>> {
             )]
         }
         // .bashrc covers interactive shells, .profile login shells
-        "bash" => vec![(home.join(".bashrc"), false), (home.join(".profile"), false)],
+        "bash" => vec![
+            (home.join(".bashrc"), false),
+            (home.join(".profile"), false),
+        ],
         "fish" => vec![(xdg_config()?.join("fish/conf.d/ev.fish"), true)],
         _ => vec![(home.join(".profile"), false)],
     };
@@ -148,7 +151,9 @@ pub fn overriding_hits(key: &str) -> Vec<crate::sources::Hit> {
     };
     let mut hooks = Vec::new();
     for (file, fish) in files {
-        let Ok(text) = fs::read_to_string(&file) else { continue };
+        let Ok(text) = fs::read_to_string(&file) else {
+            continue;
+        };
         let hook = hook_line(&dir, fish);
         if let Some(i) = text.lines().position(|l| l.trim_end() == hook) {
             hooks.push((file, i + 1));
@@ -217,7 +222,7 @@ fn write_all(dir: &Path, entries: &[Entry]) -> Result<()> {
 }
 
 /// Takes the exclusive store lock; it is released when the file is dropped.
-fn lock_store(dir: &Path) -> Result<fs::File> {
+pub(crate) fn lock_store(dir: &Path) -> Result<fs::File> {
     fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     let lock = fs::OpenOptions::new()
         .read(true)
@@ -384,7 +389,11 @@ mod tests {
             why: "",
         };
         let hooks = vec![(PathBuf::from("/h/.zshenv"), 3)];
-        let hits = vec![hit("/h/.zshenv", 5), hit("/h/.zshenv", 1), hit("/h/.zshrc", 9)];
+        let hits = vec![
+            hit("/h/.zshenv", 5),
+            hit("/h/.zshenv", 1),
+            hit("/h/.zshrc", 9),
+        ];
         assert_eq!(later_than_hooks(hits, &hooks), vec![hit("/h/.zshenv", 5)]);
     }
 

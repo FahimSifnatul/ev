@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-label="ev logo">
+  <rect width="128" height="128" rx="28" fill="#0f172a"/>
+  <!-- prompt chevron -->
+  <path d="M20 42 L42 64 L20 86" fill="none" stroke="#22c55e" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- e -->
+  <path d="M60 72 H84 C84 58 76 52 70 52 C62 52 56 59 56 69 C56 80 62 88 71 88 C77 88 81 85 83 81" fill="none" stroke="#f8fafc" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" transform="translate(-4 0)"/>
+  <!-- v -->
+  <path d="M88 52 L97 88 L106 52" fill="none" stroke="#f8fafc" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" transform="translate(4 0)"/>
+  <!-- cursor -->
+  <rect x="24" y="100" width="28" height="6" rx="3" fill="#22c55e"/>
+</svg>

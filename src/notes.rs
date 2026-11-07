@@ -22,9 +22,18 @@ fn config_dir() -> Result<std::path::PathBuf> {
 
 #[cfg(windows)]
 fn write_atomic(path: &Path, content: &str) -> Result<()> {
-    let tmp = path.with_extension("tmp");
-    fs::write(&tmp, content).with_context(|| format!("writing {}", tmp.display()))?;
-    fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))
+    // unique per process, so concurrent writers do not share a temp file
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(format!(".{}.tmp", std::process::id()));
+    let tmp = std::path::PathBuf::from(tmp);
+    if let Err(err) = fs::write(&tmp, content) {
+        let _ = fs::remove_file(&tmp);
+        return Err(err).with_context(|| format!("writing {}", tmp.display()));
+    }
+    fs::rename(&tmp, path).with_context(|| {
+        let _ = fs::remove_file(&tmp);
+        format!("replacing {}", path.display())
+    })
 }
 
 pub fn validate_text(text: &str) -> Result<()> {
@@ -96,11 +105,18 @@ pub fn load() -> Result<BTreeMap<String, String>> {
 }
 
 pub fn save(key: &str, text: &str) -> Result<()> {
-    save_in(&config_dir()?, key, text, cfg!(windows))
+    let dir = config_dir()?;
+    // read-modify-write: hold the store lock so parallel runs keep each other's notes
+    #[cfg(unix)]
+    let _lock = crate::store::lock_store(&dir)?;
+    save_in(&dir, key, text, cfg!(windows))
 }
 
 pub fn remove(key: &str) -> Result<()> {
-    remove_in(&config_dir()?, key, cfg!(windows))
+    let dir = config_dir()?;
+    #[cfg(unix)]
+    let _lock = crate::store::lock_store(&dir)?;
+    remove_in(&dir, key, cfg!(windows))
 }
 
 #[cfg(test)]

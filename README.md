@@ -1,12 +1,36 @@
-# ev
+<p align="center">
+  <img src="assets/logo.svg" alt="ev logo" width="96" height="96">
+</p>
 
-Set and remove permanent environment variables from one command, on macOS, Linux and Windows. ev keeps your variables in its own user-level store; `ev delete` also cleans up definitions in shell startup files (including system files such as `/etc/profile`) and app settings such as Go's.
+<h1 align="center">ev</h1>
 
-```
+<p align="center">
+  Set and remove permanent environment variables with one command.<br>
+  macOS &middot; Linux &middot; Windows
+</p>
+
+<p align="center">
+  <a href="https://github.com/FahimSifnatul/ev/actions/workflows/ci.yml"><img src="https://github.com/FahimSifnatul/ev/actions/workflows/ci.yml/badge.svg" alt="tests"></a>
+  <a href="https://github.com/FahimSifnatul/ev/releases/latest"><img src="https://img.shields.io/github/v/release/FahimSifnatul/ev" alt="latest release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license"></a>
+  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey" alt="platforms">
+</p>
+
+```sh
 ev set API_KEY abc123
 ```
 
 No more editing `~/.zshrc` by hand, or digging through the Windows environment dialog.
+
+## Features
+
+- **One command, every OS.** `ev set`, `get`, `list`, `unset`, `delete` behave the same on macOS, Linux and Windows.
+- **Clean delete.** `ev delete` also comments out definitions in shell startup files (including system files such as `/etc/profile`) and app settings such as Go's, after asking.
+- **Descriptions.** Attach a note to a variable; well-known ones (`HOME`, `PATH`, `JAVA_HOME`, ...) have built-in notes.
+- **Know where a value comes from.** `ev list` shows the source of each variable: process, startup file, Go, or ev.
+- **Safe by default.** Critical variables (`PATH`, `HOME`, `LD_*`, ...) ask for confirmation; scripts get plain `NAME=value` output and `--yes`.
+
+ev keeps your variables in its own user-level store and needs no administrator rights.
 
 ## Install
 
@@ -39,6 +63,15 @@ ev unset EDITOR                    # keep it, but make the value empty
 ev delete EDITOR                   # remove it completely, including its description (alias: rm)
 ev set LD_PRELOAD x --yes          # answer yes to confirmations (-y), see below
 ```
+
+| Command | Alias | What it does |
+| --- | --- | --- |
+| `ev set KEY VALUE` | `add` | Set a variable permanently (`-d` adds a description) |
+| `ev get KEY` | | Print one value |
+| `ev list` | | Print everything visible, with its source (`--ev`: only ev's) |
+| `ev unset KEY` | | Keep the variable, make its value empty |
+| `ev delete KEY` | `rm` | Remove it completely, including startup file definitions |
+| `ev init` | | Hook ev into your shell startup files (macOS/Linux) |
 
 `unset` and `delete` are different: `unset` keeps the variable (with an empty value) and its description, while `delete` removes the variable, its description, and its definitions in shell startup files (see below). `ev unset` does not alias `delete`.
 
@@ -164,6 +197,10 @@ cargo build --release   # binary at target/release/ev
 cargo test
 ```
 
+## Contributing
+
+Run `cargo fmt`, `cargo clippy --all-targets -- -D warnings` and `cargo test` before opening a pull request; CI checks all three on Linux, macOS and Windows.
+
 ## License
 
-MIT
+[MIT](LICENSE)

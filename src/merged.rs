@@ -51,8 +51,7 @@ impl Merged {
 
     /// Rename the source of process variables that `labels` knows about.
     fn relabel(&mut self, labels: &BTreeMap<String, String>) {
-        let folded: BTreeMap<String, &String> =
-            labels.iter().map(|(k, v)| (fold(k), v)).collect();
+        let folded: BTreeMap<String, &String> = labels.iter().map(|(k, v)| (fold(k), v)).collect();
         for (key, row) in &mut self.0 {
             if row.source == PROCESS {
                 if let Some(label) = folded.get(key) {
@@ -136,8 +135,15 @@ fn ev_layer(vars: BTreeMap<String, String>, deleted: &BTreeSet<String>) -> Merge
 
 /// The process environment, labelled and overridden by ev's store.
 pub fn collect() -> Result<Merged> {
-    let process = std::env::vars_os().filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)));
-    Ok(merge(process, &labels(), apps::listed(), store::list()?, &store::deleted()?))
+    let process = std::env::vars_os()
+        .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)));
+    Ok(merge(
+        process,
+        &labels(),
+        apps::listed(),
+        store::list()?,
+        &store::deleted()?,
+    ))
 }
 
 /// Where the system says a variable is defined: startup files on unix,
@@ -164,7 +170,10 @@ fn labels() -> BTreeMap<String, String> {
 /// `/home/me/.zshrc` becomes `~/.zshrc`.
 #[cfg(unix)]
 fn tilde(path: &str, home: Option<&str>) -> String {
-    match home.filter(|h| !h.is_empty()).map(|h| h.trim_end_matches('/')) {
+    match home
+        .filter(|h| !h.is_empty())
+        .map(|h| h.trim_end_matches('/'))
+    {
         Some(home) => match path.strip_prefix(home) {
             Some(rest) if rest.starts_with('/') => format!("~{rest}"),
             _ => path.to_string(),
@@ -202,7 +211,13 @@ mod tests {
 
     #[test]
     fn process_vars_are_labelled_env() {
-        let merged = merge(pairs(&[("A", "1")]), &BTreeMap::new(), Vec::new(), BTreeMap::new(), &BTreeSet::new());
+        let merged = merge(
+            pairs(&[("A", "1")]),
+            &BTreeMap::new(),
+            Vec::new(),
+            BTreeMap::new(),
+            &BTreeSet::new(),
+        );
         assert_eq!(rows(merged), [row("A", "1", "env")]);
     }
 
@@ -215,7 +230,10 @@ mod tests {
             BTreeMap::new(),
             &BTreeSet::new(),
         );
-        assert_eq!(rows(merged), [row("A", "1", "~/.zshrc"), row("B", "2", "env")]);
+        assert_eq!(
+            rows(merged),
+            [row("A", "1", "~/.zshrc"), row("B", "2", "env")]
+        );
     }
 
     #[test]
@@ -227,7 +245,10 @@ mod tests {
             map(&[("A", "new"), ("Z", "9")]),
             &BTreeSet::new(),
         );
-        assert_eq!(rows(merged), [row("A", "new", EV_STORE), row("Z", "9", EV_STORE)]);
+        assert_eq!(
+            rows(merged),
+            [row("A", "new", EV_STORE), row("Z", "9", EV_STORE)]
+        );
     }
 
     #[test]
@@ -253,7 +274,13 @@ mod tests {
     #[test]
     fn hidden_names_are_dropped() {
         let hidden: BTreeSet<String> = ["A".to_string()].into();
-        let merged = merge(pairs(&[("A", "1"), ("B", "2")]), &BTreeMap::new(), Vec::new(), BTreeMap::new(), &hidden);
+        let merged = merge(
+            pairs(&[("A", "1"), ("B", "2")]),
+            &BTreeMap::new(),
+            Vec::new(),
+            BTreeMap::new(),
+            &hidden,
+        );
         assert!(merged.get("A").is_none());
         assert_eq!(merged.get("B").map(|r| r.value.as_str()), Some("2"));
     }
@@ -281,8 +308,18 @@ mod tests {
         assert_eq!(
             got,
             [
-                ("A".to_string(), "1".to_string(), EV_STORE.to_string(), false),
-                ("GONE".to_string(), String::new(), format!("{EV_STORE} (deleted)"), true),
+                (
+                    "A".to_string(),
+                    "1".to_string(),
+                    EV_STORE.to_string(),
+                    false
+                ),
+                (
+                    "GONE".to_string(),
+                    String::new(),
+                    format!("{EV_STORE} (deleted)"),
+                    true
+                ),
             ]
         );
     }
@@ -300,7 +337,10 @@ mod tests {
     fn tilde_shortens_paths_under_home() {
         assert_eq!(tilde("/home/me/.zshrc", Some("/home/me")), "~/.zshrc");
         assert_eq!(tilde("/home/me/.zshrc", Some("/home/me/")), "~/.zshrc");
-        assert_eq!(tilde("/home/meow/.zshrc", Some("/home/me")), "/home/meow/.zshrc");
+        assert_eq!(
+            tilde("/home/meow/.zshrc", Some("/home/me")),
+            "/home/meow/.zshrc"
+        );
         assert_eq!(tilde("/etc/profile", Some("/home/me")), "/etc/profile");
         assert_eq!(tilde("/etc/profile", None), "/etc/profile");
         assert_eq!(tilde("/etc/profile", Some("")), "/etc/profile");

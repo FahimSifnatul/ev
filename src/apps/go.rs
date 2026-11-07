@@ -50,7 +50,11 @@ fn go(args: &[&str]) -> Result<String> {
         .output()
         .context("could not run go")?;
     if !out.status.success() {
-        bail!("go {}: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim());
+        bail!(
+            "go {}: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
     }
     String::from_utf8(out.stdout).context("go printed text that is not UTF-8")
 }
@@ -86,7 +90,9 @@ mod tests {
 
     #[test]
     fn parses_env_file_lines() {
-        let map = parse_env_file("GOPROXY=direct\r\n# note\n\nGOFLAGS=\nBAD\nGOPRIVATE=a=b\nGOPROXY=off\nGOENV=/x\n");
+        let map = parse_env_file(
+            "GOPROXY=direct\r\n# note\n\nGOFLAGS=\nBAD\nGOPRIVATE=a=b\nGOPROXY=off\nGOENV=/x\n",
+        );
         assert_eq!(map.len(), 3, "{map:?}");
         assert_eq!(map["GOPROXY"], "off");
         assert_eq!(map["GOFLAGS"], "");
