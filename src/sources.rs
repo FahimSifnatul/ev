@@ -49,7 +49,9 @@ struct Roots {
 }
 
 fn home_dir() -> Option<PathBuf> {
-    env::var_os("HOME").filter(|h| !h.is_empty()).map(PathBuf::from)
+    env::var_os("HOME")
+        .filter(|h| !h.is_empty())
+        .map(PathBuf::from)
 }
 
 /// `ZDOTDIR` when it is set, non-empty and not the home directory itself.
@@ -105,7 +107,14 @@ const USER_FILES: [&str; 7] = [
     ".config/fish/config.fish",
 ];
 const ZSH_FILES: [&str; 3] = [".zshenv", ".zprofile", ".zshrc"];
-const SYSTEM_FILES: [&str; 6] = ["zshenv", "zprofile", "zshrc", "bashrc", "bash.bashrc", "environment"];
+const SYSTEM_FILES: [&str; 6] = [
+    "zshenv",
+    "zprofile",
+    "zshrc",
+    "bashrc",
+    "bash.bashrc",
+    "environment",
+];
 const HOOK_MARKER: &[u8] = b"# added by ev";
 const REMOVED: &[u8] = b"# removed by ev: ";
 
@@ -203,7 +212,10 @@ fn parse_assign(line: &[u8]) -> Option<(&str, &[u8], bool)> {
     let strip = |prefixes: &[&[u8]]| {
         prefixes.iter().find_map(|p| {
             let after = line.strip_prefix(*p)?;
-            after.first().is_some_and(|&b| is_blank(b)).then(|| trim_start(after))
+            after
+                .first()
+                .is_some_and(|&b| is_blank(b))
+                .then(|| trim_start(after))
         })
     };
     let fish = strip(&FISH);
@@ -336,7 +348,11 @@ fn lex_line(line: &[u8], mut quote: Option<u8>, fish: bool) -> LineEnd {
             }
             None => match b {
                 b'\\' if i + 1 == line.len() => {
-                    return LineEnd { quote, heredocs, continued: true };
+                    return LineEnd {
+                        quote,
+                        heredocs,
+                        continued: true,
+                    };
                 }
                 b'\\' => i += 1,
                 b'\'' if !fish && i > 0 && line[i - 1] == b'$' => quote = Some(b'$'),
@@ -375,7 +391,11 @@ fn lex_line(line: &[u8], mut quote: Option<u8>, fish: bool) -> LineEnd {
         }
         i += 1;
     }
-    LineEnd { quote, heredocs, continued: false }
+    LineEnd {
+        quote,
+        heredocs,
+        continued: false,
+    }
 }
 
 /// The delimiter word at `line[j..]` with its quotes removed, and where it ends.
@@ -442,7 +462,9 @@ fn assignments(bytes: &[u8], fish_file: bool) -> Vec<Found<'_>> {
         if inside || contains(line, HOOK_MARKER) {
             continue;
         }
-        let Some((key, value, fish)) = parse_assign(line) else { continue };
+        let Some((key, value, fish)) = parse_assign(line) else {
+            continue;
+        };
         let why = if refers_to(value, key) {
             WHY_SELF
         } else if is_complex(value, fish) {
@@ -450,7 +472,12 @@ fn assignments(bytes: &[u8], fish_file: bool) -> Vec<Found<'_>> {
         } else {
             ""
         };
-        found.push(Found { line_no: i + 1, key, line, why });
+        found.push(Found {
+            line_no: i + 1,
+            key,
+            line,
+            why,
+        });
     }
     found
 }
@@ -464,7 +491,10 @@ fn scan_in(roots: &Roots, key: &str) -> Vec<Hit> {
     let mut hits = Vec::new();
     for file in roots.files() {
         let Ok(bytes) = fs::read(&file) else { continue };
-        for found in assignments(&bytes, is_fish_file(&file)).into_iter().filter(|f| f.key == key) {
+        for found in assignments(&bytes, is_fish_file(&file))
+            .into_iter()
+            .filter(|f| f.key == key)
+        {
             let why = if file == pam_env {
                 // pam_env syntax, not shell: a `:` line would break it
                 WHY_PAM
@@ -519,7 +549,11 @@ pub fn comment_out(hits: &[Hit], backup: bool) -> Result<Report> {
     for hit in hits {
         if hit.editable {
             let real = fs::canonicalize(&hit.file).unwrap_or_else(|_| hit.file.clone());
-            by_file.entry(real).or_insert((&hit.file, Vec::new())).1.push(hit);
+            by_file
+                .entry(real)
+                .or_insert((&hit.file, Vec::new()))
+                .1
+                .push(hit);
         } else {
             report.left.push(hit.clone());
         }
@@ -556,9 +590,10 @@ fn edit_file(file: &Path, hits: &[&Hit], backup: bool) -> Result<()> {
             continue;
         }
         let body = raw.strip_suffix(b"\n").unwrap_or(raw);
-        let unchanged = hits
-            .iter()
-            .any(|h| h.line_no == line_no && h.text.as_bytes() == String::from_utf8_lossy(strip_cr(body)).as_bytes());
+        let unchanged = hits.iter().any(|h| {
+            h.line_no == line_no
+                && h.text.as_bytes() == String::from_utf8_lossy(strip_cr(body)).as_bytes()
+        });
         if !unchanged {
             bail!("line {line_no} changed since it was scanned");
         }
@@ -635,7 +670,11 @@ mod tests {
             let sys = dir.path().join("sys");
             fs::create_dir_all(&home).unwrap();
             fs::create_dir_all(&sys).unwrap();
-            Fx { _dir: dir, home, sys }
+            Fx {
+                _dir: dir,
+                home,
+                sys,
+            }
         }
 
         fn roots(&self) -> Roots {
@@ -649,13 +688,30 @@ mod tests {
         }
 
         fn scan_as_root(&self, key: &str) -> Vec<Hit> {
-            scan_in(&Roots { root: true, ..self.roots() }, key)
+            scan_in(
+                &Roots {
+                    root: true,
+                    ..self.roots()
+                },
+                key,
+            )
         }
 
         fn sh_ok(&self, path: &Path) -> Option<bool> {
-            let probe = std::process::Command::new("sh").arg("-c").arg("true").status().ok()?;
+            let probe = std::process::Command::new("sh")
+                .arg("-c")
+                .arg("true")
+                .status()
+                .ok()?;
             assert!(probe.success());
-            Some(std::process::Command::new("sh").arg("-n").arg(path).status().unwrap().success())
+            Some(
+                std::process::Command::new("sh")
+                    .arg("-n")
+                    .arg(path)
+                    .status()
+                    .unwrap()
+                    .success(),
+            )
         }
 
         fn write(&self, rel: &str, content: impl AsRef<[u8]>) -> PathBuf {
@@ -684,7 +740,10 @@ mod tests {
         fs::create_dir_all(&zdot).unwrap();
         fs::write(zdot.join(".zshrc"), "export FOO=1\n").unwrap();
         assert!(fx.scan("FOO").is_empty());
-        let roots = Roots { zdotdir: Some(zdot.clone()), ..fx.roots() };
+        let roots = Roots {
+            zdotdir: Some(zdot.clone()),
+            ..fx.roots()
+        };
         let hits = scan_in(&roots, "FOO");
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].file, zdot.join(".zshrc"));
@@ -843,7 +902,10 @@ mod tests {
         comment_out(&hits, true).unwrap();
         assert_eq!(fs::read_to_string(&user).unwrap(), "export FOO=1\n");
         assert!(!fx.home.join(".zshrc.ev-bak").exists());
-        assert_eq!(fs::read_to_string(&sys).unwrap(), ": # removed by ev: export FOO=2\n");
+        assert_eq!(
+            fs::read_to_string(&sys).unwrap(),
+            ": # removed by ev: export FOO=2\n"
+        );
     }
 
     #[test]
@@ -880,7 +942,13 @@ mod tests {
         let texts: Vec<String> = fx.scan("FOO").into_iter().map(|h| h.text).collect();
         assert_eq!(
             texts,
-            ["export FOO=after1", "FOO=after2", "export FOO=after3", "FOO=after4", "FOO=after5"]
+            [
+                "export FOO=after1",
+                "FOO=after2",
+                "export FOO=after3",
+                "FOO=after4",
+                "FOO=after5"
+            ]
         );
         let all = scan_all_in(&fx.roots());
         assert!(all.contains_key("FOO"));
@@ -898,7 +966,10 @@ mod tests {
              echo it's # comment\nFOO=in\n'\nFOO=after4\n",
         );
         let texts: Vec<String> = fx.scan("FOO").into_iter().map(|h| h.text).collect();
-        assert_eq!(texts, ["FOO=after1", "FOO=after2", "FOO=after3", "FOO=after4"]);
+        assert_eq!(
+            texts,
+            ["FOO=after1", "FOO=after2", "FOO=after3", "FOO=after4"]
+        );
         assert_eq!(fx.scan("MSG").len(), 1);
     }
 
@@ -955,7 +1026,10 @@ mod tests {
         let fx = Fx::new();
         let rc = fx.write(".zshrc", "a=1\nexport FOO=1");
         comment_out(&fx.scan("FOO"), true).unwrap();
-        assert_eq!(fs::read_to_string(&rc).unwrap(), "a=1\n: # removed by ev: export FOO=1");
+        assert_eq!(
+            fs::read_to_string(&rc).unwrap(),
+            "a=1\n: # removed by ev: export FOO=1"
+        );
     }
 
     #[test]
@@ -994,8 +1068,14 @@ mod tests {
         let link = fx.home.join(".zshrc");
         std::os::unix::fs::symlink(&real, &link).unwrap();
         comment_out(&fx.scan("FOO"), true).unwrap();
-        assert!(fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
-        assert_eq!(fs::read_to_string(&real).unwrap(), ": # removed by ev: export FOO=1\n");
+        assert!(fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            fs::read_to_string(&real).unwrap(),
+            ": # removed by ev: export FOO=1\n"
+        );
         let mode = fs::metadata(&real).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o640);
     }
@@ -1015,7 +1095,10 @@ mod tests {
         assert_eq!(report.commented.len(), 1);
         assert_eq!(fs::read_to_string(&ro).unwrap(), "export FOO=1\n");
         assert!(!fx.home.join(".zshenv.ev-bak").exists());
-        assert_eq!(fs::read_to_string(&rw).unwrap(), ": # removed by ev: export FOO=2\n");
+        assert_eq!(
+            fs::read_to_string(&rw).unwrap(),
+            ": # removed by ev: export FOO=2\n"
+        );
     }
 
     #[test]
@@ -1080,12 +1163,20 @@ mod tests {
     fn indented_block_body_stays_valid_shell() {
         let fx = Fx::new();
         let rc = fx.write(".profile", "if true; then\n  export A=1\nfi\necho ok\n");
-        let Ok(probe) = std::process::Command::new("sh").arg("-c").arg("true").status() else {
+        let Ok(probe) = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("true")
+            .status()
+        else {
             return; // no sh available
         };
         assert!(probe.success());
         comment_out(&fx.scan("A"), true).unwrap();
-        let check = std::process::Command::new("sh").arg("-n").arg(&rc).status().unwrap();
+        let check = std::process::Command::new("sh")
+            .arg("-n")
+            .arg(&rc)
+            .status()
+            .unwrap();
         assert!(check.success(), "{}", fs::read_to_string(&rc).unwrap());
     }
 
@@ -1098,6 +1189,9 @@ mod tests {
         assert_eq!(hits.len(), 2);
         let report = comment_out(&hits, true).unwrap();
         assert!(report.skipped.is_empty(), "{report:?}");
-        assert_eq!(fs::read_to_string(&real).unwrap(), ": # removed by ev: export FOO=1\n");
+        assert_eq!(
+            fs::read_to_string(&real).unwrap(),
+            ": # removed by ev: export FOO=1\n"
+        );
     }
 }

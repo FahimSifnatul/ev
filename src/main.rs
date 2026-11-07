@@ -89,7 +89,13 @@ fn main() {
 
 fn run(cli: Cli) -> Result<()> {
     match cli.command {
-        Command::Set { key, value, desc, app, expand } => {
+        Command::Set {
+            key,
+            value,
+            desc,
+            app,
+            expand,
+        } => {
             store::validate_key(&key)?;
             store::validate_value(&value)?;
             if let Some(text) = &desc {
@@ -166,7 +172,10 @@ fn run(cli: Cli) -> Result<()> {
             guard(&key, cli.yes)?;
             delete_everywhere(&key, cli.yes)?;
         }
-        Command::Get { key, app: Some(name) } => match apps::find(&name)?.get(&key)? {
+        Command::Get {
+            key,
+            app: Some(name),
+        } => match apps::find(&name)?.get(&key)? {
             Some(value) => print_value(&key, &value),
             None => std::process::exit(1),
         },
@@ -175,7 +184,11 @@ fn run(cli: Cli) -> Result<()> {
             None => std::process::exit(1),
         },
         Command::List { ev } => {
-            let vars = if ev { merged::ev_only()? } else { merged::collect()? };
+            let vars = if ev {
+                merged::ev_only()?
+            } else {
+                merged::collect()?
+            };
             print_list(vars);
         }
         Command::Init => store::init()?,
@@ -237,7 +250,10 @@ fn app_holders(key: &str) -> Vec<Box<dyn apps::App>> {
         .filter(|(_, vars)| vars.contains_key(key))
         .map(|(name, _)| name)
         .collect();
-    apps::all().into_iter().filter(|a| having.contains(&a.name())).collect()
+    apps::all()
+        .into_iter()
+        .filter(|a| having.contains(&a.name()))
+        .collect()
 }
 
 fn guard(key: &str, yes: bool) -> Result<()> {
@@ -260,14 +276,22 @@ fn delete_everywhere(key: &str, yes: bool) -> Result<()> {
     let as_root = false;
     #[cfg(unix)]
     let rc_hits = sources::scan(key);
-    let holders = if as_root { Vec::new() } else { app_holders(key) };
+    let holders = if as_root {
+        Vec::new()
+    } else {
+        app_holders(key)
+    };
 
     #[cfg(unix)]
     let rc_editable = show_rc_hits(key, &rc_hits);
     #[cfg(not(unix))]
     let rc_editable = false;
     for app in &holders {
-        eprintln!("{key} is also set in {0}'s settings:\n  {0}: {1}", app.name(), app.delete_command(key));
+        eprintln!(
+            "{key} is also set in {0}'s settings:\n  {0}: {1}",
+            app.name(),
+            app.delete_command(key)
+        );
     }
     if rc_editable || !holders.is_empty() {
         eprintln!("ev will make these changes.");
@@ -348,7 +372,11 @@ fn comment_out_rc_lines(key: &str, hits: &[sources::Hit]) {
         } else {
             String::new()
         };
-        eprintln!("ev: could not edit {}: {}.{hint}", skipped.file.display(), skipped.reason);
+        eprintln!(
+            "ev: could not edit {}: {}.{hint}",
+            skipped.file.display(),
+            skipped.reason
+        );
     }
 }
 

@@ -223,10 +223,19 @@ fn init_hooks_home_and_zdotdir_when_they_differ() {
     let zdot = env.root.path().join("zdot");
     std::fs::create_dir_all(&zdot).unwrap();
     let out = run_with_zdotdir(&env, zdot.to_str().unwrap(), &["init"]);
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     for file in [env.zshenv(), zdot.join(".zshenv"), zdot.join(".zshrc")] {
         let text = std::fs::read_to_string(&file).unwrap();
-        assert_eq!(text.matches("# added by ev").count(), 1, "{}", file.display());
+        assert_eq!(
+            text.matches("# added by ev").count(),
+            1,
+            "{}",
+            file.display()
+        );
     }
     assert!(!env.rc().exists());
 }
@@ -235,9 +244,17 @@ fn init_hooks_home_and_zdotdir_when_they_differ() {
 fn empty_zdotdir_is_treated_as_unset() {
     let env = Env::new();
     let out = run_with_zdotdir(&env, "", &["init"]);
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    assert!(std::fs::read_to_string(env.zshenv()).unwrap().contains("# added by ev"));
-    assert!(std::fs::read_to_string(env.rc()).unwrap().contains("# added by ev"));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(std::fs::read_to_string(env.zshenv())
+        .unwrap()
+        .contains("# added by ev"));
+    assert!(std::fs::read_to_string(env.rc())
+        .unwrap()
+        .contains("# added by ev"));
 }
 
 #[test]
@@ -254,7 +271,11 @@ fn init_hooks_every_bash_file() {
             .stdin(Stdio::null())
             .output()
             .unwrap();
-        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     };
     bash(&["init"]);
     let files: &[&str] = if cfg!(target_os = "macos") {
@@ -323,7 +344,11 @@ fn set_succeeds_when_rc_cannot_be_located() {
         .stdin(Stdio::null())
         .output()
         .unwrap();
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     assert_eq!(env.read("vars"), "FOO=bar\n");
 }
 
@@ -429,7 +454,10 @@ fn delete_with_rc_hits_needs_yes_without_terminal() {
     let env = Env::new();
     std::fs::write(env.rc(), "export FOO=old\n").unwrap();
     assert!(!env.run(&["delete", "FOO"]).status.success());
-    assert_eq!(std::fs::read_to_string(env.rc()).unwrap(), "export FOO=old\n");
+    assert_eq!(
+        std::fs::read_to_string(env.rc()).unwrap(),
+        "export FOO=old\n"
+    );
     assert_eq!(env.read("vars"), "");
 }
 
@@ -447,7 +475,10 @@ fn list_includes_inherited_process_vars() {
         .output()
         .unwrap();
     let text = String::from_utf8(out.stdout).unwrap();
-    assert!(text.lines().any(|l| l == "INHERITED_VAR=from-parent"), "{text}");
+    assert!(
+        text.lines().any(|l| l == "INHERITED_VAR=from-parent"),
+        "{text}"
+    );
 }
 
 #[test]
@@ -482,7 +513,10 @@ fn ev_store_overrides_inherited_value() {
         .output()
         .unwrap();
     let text = String::from_utf8(out.stdout).unwrap();
-    let lines: Vec<&str> = text.lines().filter(|l| l.starts_with("INHERITED_VAR")).collect();
+    let lines: Vec<&str> = text
+        .lines()
+        .filter(|l| l.starts_with("INHERITED_VAR"))
+        .collect();
     assert_eq!(lines, ["INHERITED_VAR=mine"]);
 }
 
@@ -604,7 +638,10 @@ fn unset_empties_go_var() {
     let env = Env::new();
     env.ok_go(&["set", "GOPROXY", "direct", "--app", "go"]);
     env.ok_go(&["unset", "GOPROXY", "--app", "go"]);
-    assert!(!env.run_go(&["get", "GOPROXY", "--app", "go"]).status.success());
+    assert!(!env
+        .run_go(&["get", "GOPROXY", "--app", "go"])
+        .status
+        .success());
 }
 
 #[test]
@@ -741,7 +778,10 @@ fn sudo_hint_names_the_key_and_only_for_system_files() {
         .unwrap();
     assert!(out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
-    let lines: Vec<&str> = stderr.lines().filter(|l| l.contains("could not edit")).collect();
+    let lines: Vec<&str> = stderr
+        .lines()
+        .filter(|l| l.contains("could not edit"))
+        .collect();
     assert_eq!(lines.len(), 2, "{stderr}");
     let sys_line = lines.iter().find(|l| l.contains("etc/profile")).unwrap();
     assert!(sys_line.contains("sudo ev delete MYKEY --yes"), "{stderr}");
@@ -784,7 +824,10 @@ fn parallel_sets_do_not_lose_updates() {
     }
     let listed = env.ok(&["list", "--ev"]);
     for i in 0..20 {
-        assert!(listed.contains(&format!("K{i}=v\n")), "missing K{i}: {listed}");
+        assert!(
+            listed.contains(&format!("K{i}=v\n")),
+            "missing K{i}: {listed}"
+        );
     }
 }
 
@@ -802,7 +845,10 @@ fn set_warns_when_later_startup_line_overrides() {
         env.zshenv().display()
     );
     assert!(err.contains(&want), "{err}");
-    assert!(err.contains(", after ev loads; that value wins in new shells"), "{err}");
+    assert!(
+        err.contains(", after ev loads; that value wins in new shells"),
+        "{err}"
+    );
 
     std::fs::write(env.zshenv(), format!("export BAR=2\n{hook}")).unwrap();
     let out = env.run(&["set", "BAR", "1"]);

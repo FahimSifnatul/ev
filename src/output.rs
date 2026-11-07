@@ -29,7 +29,9 @@ pub fn table(rows: &[Row]) -> String {
         let name = pad(row[0], widths[0]);
         let value = pad(row[1], widths[1]);
         let source = pad(row[2], widths[2]);
-        format!("{name}  {value}  {source}  {}", row[3]).trim_end().to_string()
+        format!("{name}  {value}  {source}  {}", row[3])
+            .trim_end()
+            .to_string()
     };
     let mut out = format!("{}\n", line(HEADER));
     for row in &cells {
@@ -60,7 +62,12 @@ mod tests {
     }
 
     fn src_row(name: &str, value: &str, source: &str, desc: &str) -> Row {
-        (name.to_string(), value.to_string(), source.to_string(), desc.to_string())
+        (
+            name.to_string(),
+            value.to_string(),
+            source.to_string(),
+            desc.to_string(),
+        )
     }
 
     #[test]
@@ -78,13 +85,19 @@ mod tests {
         let lines: Vec<&str> = out.lines().skip(1).collect();
         assert_eq!(
             lines,
-            ["A       1      ev        one", "LONGER  value  ~/.zshrc  two"]
+            [
+                "A       1      ev        one",
+                "LONGER  value  ~/.zshrc  two"
+            ]
         );
     }
 
     #[test]
     fn source_column_shows_each_source() {
-        let out = table(&[src_row("A", "1", "env", ""), src_row("B", "2", "/etc/profile", "")]);
+        let out = table(&[
+            src_row("A", "1", "env", ""),
+            src_row("B", "2", "/etc/profile", ""),
+        ]);
         let lines: Vec<&str> = out.lines().collect();
         assert_eq!(lines[0], "NAME  VALUE  SOURCE        DESCRIPTION");
         assert_eq!(lines[1], "A     1      env");
